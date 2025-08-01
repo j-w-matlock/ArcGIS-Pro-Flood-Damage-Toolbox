@@ -74,9 +74,6 @@ class AgFloodDamageEstimator(object):
 
         return [crop, depth, out_dir, crop_info, event_info]
 
-    def updateParameters(self, params):
-        return
-
     def isLicensed(self):
         return True
 
@@ -89,7 +86,6 @@ class AgFloodDamageEstimator(object):
         out_dir = params[2].valueAsText
         crop_info = params[3].values
         event_info = params[4].values
-
         os.makedirs(out_dir, exist_ok=True)
         crop_arr = arcpy.RasterToNumPyArray(crop_raster)
         counts = Counter(crop_arr.flatten())
