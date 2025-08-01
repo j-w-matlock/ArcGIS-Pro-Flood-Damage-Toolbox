@@ -74,6 +74,30 @@ class AgFloodDamageEstimator(object):
 
         return [crop, depth, out_dir, crop_info, event_info]
 
+    def updateParameters(self, params):
+        crop_param = params[0]
+        depth_param = params[1]
+        crop_table_param = params[3]
+        event_table_param = params[4]
+
+        if crop_param.altered and not crop_table_param.altered and crop_param.valueAsText:
+            arr = arcpy.RasterToNumPyArray(crop_param.valueAsText)
+            counts = Counter(arr.flatten())
+            counts.pop(0, None)
+            top = [c for c, _ in counts.most_common(20)]
+            vt = arcpy.ValueTable(0)
+            for code in top:
+                vt.addRow([code, "", ""])
+            crop_table_param.value = vt
+
+        if depth_param.altered and not event_table_param.altered and depth_param.values:
+            vt = arcpy.ValueTable(0)
+            for v in depth_param.values:
+                vt.addRow([v, "", ""])
+            event_table_param.value = vt
+
+        return
+
     def isLicensed(self):
         return True
 
@@ -90,12 +114,24 @@ class AgFloodDamageEstimator(object):
         crop_arr = arcpy.RasterToNumPyArray(crop_raster)
         counts = Counter(crop_arr.flatten())
         counts.pop(0, None)
+        top_crop_codes = [code for code, _ in counts.most_common(20)]
+
         top_crop_codes = [code for code, _ in counts.most_common(10)]
+
 
         crop_table = {}
         for row in crop_info:
             if len(row) < 3:
                 continue
+            try:
+                code = int(row[0])
+                value = float(row[1])
+                months = [int(m.strip()) for m in str(row[2]).split(',') if m.strip()]
+            except (ValueError, TypeError):
+                continue
+            if code not in top_crop_codes or not months:
+                continue
+            crop_table[code] = {"Value": value, "GrowingSeason": months}
             code = int(row[0])
             if code not in top_crop_codes:
                 continue
@@ -106,6 +142,13 @@ class AgFloodDamageEstimator(object):
         for row in event_info:
             if len(row) < 3:
                 continue
+            try:
+                label = os.path.splitext(os.path.basename(row[0]))[0]
+                month = int(row[1])
+                rp = int(row[2])
+            except (ValueError, TypeError, AttributeError):
+                continue
+            event_table[label] = {"Month": month, "RP": rp}
             label = os.path.splitext(os.path.basename(row[0]))[0]
             event_table[label] = {"Month": int(row[1]), "RP": int(row[2])}
 
