@@ -67,6 +67,14 @@ class AgFloodDamageEstimator(object):
     def updateParameters(self, params):
         return
 
+        crop = arcpy.Parameter(0, "crop_raster", "GPRasterLayer", "Input", "Required")
+        depth = arcpy.Parameter(1, "depth_rasters", "GPRasterLayer", "Input", "Required")
+        depth.multiValue = True
+        out_dir = arcpy.Parameter(2, "output_folder", "DEFolder", "Input", "Required")
+        crop_csv = arcpy.Parameter(3, "crop_csv", "DEFile", "Input", "Required")
+        event_csv = arcpy.Parameter(4, "event_csv", "DEFile", "Input", "Required")
+        return [crop, depth, out_dir, crop_csv, event_csv]
+
     def isLicensed(self):
         return True
 
@@ -76,6 +84,16 @@ class AgFloodDamageEstimator(object):
     def execute(self, params, messages):
         crop_raster = params[0].valueAsText
         depth_rasters = [v.valueAsText for v in params[1].values]
+
+        import pandas as pd
+        import numpy as np
+        import os
+        from collections import Counter
+        from scipy.interpolate import interp1d
+        import random
+        crop_raster = params[0].valueAsText
+        depth_rasters = params[1].values
+
         out_dir = params[2].valueAsText
         crop_csv = params[3].valueAsText
         event_csv = params[4].valueAsText
@@ -148,6 +166,8 @@ class AgFloodDamageEstimator(object):
                 code, acres, base = row["CropCode"], row["Acres"], row["AvgDamage"]
                 cv = crop_table[code]["Value"]
                 months = crop_table[code]["GrowingSeason"]
+                base_month = event_table[label]["Month"]
+
                 rp = event_table[label]["RP"]
                 for s in range(500):
                     month = random.choice(months)
