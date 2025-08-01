@@ -110,12 +110,14 @@ class AgFloodDamageEstimator(object):
         out_dir = params[2].valueAsText
         crop_info = params[3].values
         event_info = params[4].values
-
         os.makedirs(out_dir, exist_ok=True)
         crop_arr = arcpy.RasterToNumPyArray(crop_raster)
         counts = Counter(crop_arr.flatten())
         counts.pop(0, None)
         top_crop_codes = [code for code, _ in counts.most_common(20)]
+
+        top_crop_codes = [code for code, _ in counts.most_common(10)]
+
 
         crop_table = {}
         for row in crop_info:
@@ -130,6 +132,11 @@ class AgFloodDamageEstimator(object):
             if code not in top_crop_codes or not months:
                 continue
             crop_table[code] = {"Value": value, "GrowingSeason": months}
+            code = int(row[0])
+            if code not in top_crop_codes:
+                continue
+            months = [int(m.strip()) for m in str(row[2]).split(',')]
+            crop_table[code] = {"Value": float(row[1]), "GrowingSeason": months}
 
         event_table = {}
         for row in event_info:
@@ -142,6 +149,8 @@ class AgFloodDamageEstimator(object):
             except (ValueError, TypeError, AttributeError):
                 continue
             event_table[label] = {"Month": month, "RP": rp}
+            label = os.path.splitext(os.path.basename(row[0]))[0]
+            event_table[label] = {"Month": int(row[1]), "RP": int(row[2])}
 
         all_summaries = {}
         for depth in depth_rasters:
