@@ -46,6 +46,33 @@ class AgFloodDamageEstimator(object):
             direction="Input",
         )
 
+        crop_info = arcpy.Parameter(
+            displayName="Crop Information",
+            name="crop_info",
+            datatype="GPValueTable",
+            parameterType="Required",
+            direction="Input",
+        )
+        crop_info.columns = [
+            ["GPLong", "Crop Code"],
+            ["GPDouble", "Value Per Acre"],
+            ["GPString", "Growing Season Months"],
+        ]
+
+        event_info = arcpy.Parameter(
+            displayName="Event Information",
+            name="event_info",
+            datatype="GPValueTable",
+            parameterType="Required",
+            direction="Input",
+        )
+        event_info.columns = [
+            ["GPRasterLayer", "Raster"],
+            ["GPLong", "Month"],
+            ["GPLong", "Return Period"],
+        ]
+
+        return [crop, depth, out_dir, crop_info, event_info]
         crop_csv = arcpy.Parameter(
             displayName="Crop Table CSV",
             name="crop_csv",
@@ -66,7 +93,7 @@ class AgFloodDamageEstimator(object):
 
     def updateParameters(self, params):
         return
-
+    
         crop = arcpy.Parameter(0, "crop_raster", "GPRasterLayer", "Input", "Required")
         depth = arcpy.Parameter(1, "depth_rasters", "GPRasterLayer", "Input", "Required")
         depth.multiValue = True
@@ -84,20 +111,9 @@ class AgFloodDamageEstimator(object):
     def execute(self, params, messages):
         crop_raster = params[0].valueAsText
         depth_rasters = [v.valueAsText for v in params[1].values]
-
-        import pandas as pd
-        import numpy as np
-        import os
-        from collections import Counter
-        from scipy.interpolate import interp1d
-        import random
-        crop_raster = params[0].valueAsText
-        depth_rasters = params[1].values
-
         out_dir = params[2].valueAsText
-        crop_csv = params[3].valueAsText
-        event_csv = params[4].valueAsText
-
+        crop_info = params[3].values
+        event_info = params[4].values
         os.makedirs(out_dir, exist_ok=True)
         crop_arr = arcpy.RasterToNumPyArray(crop_raster)
         counts = Counter(crop_arr.flatten())
@@ -105,6 +121,21 @@ class AgFloodDamageEstimator(object):
         top_crop_codes = [code for code, _ in counts.most_common(10)]
 
         crop_table = {}
+        for row in crop_info:
+            if len(row) < 3:
+                continue
+            code = int(row[0])
+            if code not in top_crop_codes:
+                continue
+            months = [int(m.strip()) for m in str(row[2]).split(',')]
+            crop_table[code] = {"Value": float(row[1]), "GrowingSeason": months}
+
+        event_table = {}
+        for row in event_info:
+            if len(row) < 3:
+                continue
+            label = os.path.splitext(os.path.basename(row[0]))[0]
+            event_table[label] = {"Month": int(row[1]), "RP": int(row[2])}
         df_crop = pd.read_csv(crop_csv)
         for _, row in df_crop.iterrows():
             code = int(row["CropCode"])
@@ -118,6 +149,7 @@ class AgFloodDamageEstimator(object):
         for _, row in df_event.iterrows():
             label = os.path.splitext(os.path.basename(row["Raster"]))[0]
             event_table[label] = {"Month": int(row["Month"]), "RP": int(row["RP"])}
+
 
         all_summaries = {}
         for depth in depth_rasters:
@@ -167,7 +199,6 @@ class AgFloodDamageEstimator(object):
                 cv = crop_table[code]["Value"]
                 months = crop_table[code]["GrowingSeason"]
                 base_month = event_table[label]["Month"]
-
                 rp = event_table[label]["RP"]
                 for s in range(500):
                     month = random.choice(months)
