@@ -73,9 +73,34 @@ class AgFloodDamageEstimator(object):
         ]
 
         return [crop, depth, out_dir, crop_info, event_info]
+        crop_csv = arcpy.Parameter(
+            displayName="Crop Table CSV",
+            name="crop_csv",
+            datatype="DEFile",
+            parameterType="Required",
+            direction="Input",
+        )
+
+        event_csv = arcpy.Parameter(
+            displayName="Event Table CSV",
+            name="event_csv",
+            datatype="DEFile",
+            parameterType="Required",
+            direction="Input",
+        )
+
+        return [crop, depth, out_dir, crop_csv, event_csv]
 
     def updateParameters(self, params):
         return
+    
+        crop = arcpy.Parameter(0, "crop_raster", "GPRasterLayer", "Input", "Required")
+        depth = arcpy.Parameter(1, "depth_rasters", "GPRasterLayer", "Input", "Required")
+        depth.multiValue = True
+        out_dir = arcpy.Parameter(2, "output_folder", "DEFolder", "Input", "Required")
+        crop_csv = arcpy.Parameter(3, "crop_csv", "DEFile", "Input", "Required")
+        event_csv = arcpy.Parameter(4, "event_csv", "DEFile", "Input", "Required")
+        return [crop, depth, out_dir, crop_csv, event_csv]
 
     def isLicensed(self):
         return True
@@ -89,7 +114,6 @@ class AgFloodDamageEstimator(object):
         out_dir = params[2].valueAsText
         crop_info = params[3].values
         event_info = params[4].values
-
         os.makedirs(out_dir, exist_ok=True)
         crop_arr = arcpy.RasterToNumPyArray(crop_raster)
         counts = Counter(crop_arr.flatten())
@@ -112,6 +136,20 @@ class AgFloodDamageEstimator(object):
                 continue
             label = os.path.splitext(os.path.basename(row[0]))[0]
             event_table[label] = {"Month": int(row[1]), "RP": int(row[2])}
+        df_crop = pd.read_csv(crop_csv)
+        for _, row in df_crop.iterrows():
+            code = int(row["CropCode"])
+            if code not in top_crop_codes:
+                continue
+            months = [int(m) for m in str(row["Months"]).split(',')]
+            crop_table[code] = {"Value": float(row["Value"]), "GrowingSeason": months}
+
+        event_table = {}
+        df_event = pd.read_csv(event_csv)
+        for _, row in df_event.iterrows():
+            label = os.path.splitext(os.path.basename(row["Raster"]))[0]
+            event_table[label] = {"Month": int(row["Month"]), "RP": int(row["RP"])}
+
 
         all_summaries = {}
         for depth in depth_rasters:
@@ -160,6 +198,7 @@ class AgFloodDamageEstimator(object):
                 code, acres, base = row["CropCode"], row["Acres"], row["AvgDamage"]
                 cv = crop_table[code]["Value"]
                 months = crop_table[code]["GrowingSeason"]
+                base_month = event_table[label]["Month"]
                 rp = event_table[label]["RP"]
                 for s in range(500):
                     month = random.choice(months)
