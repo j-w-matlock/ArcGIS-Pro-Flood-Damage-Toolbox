@@ -21,13 +21,51 @@ class AgFloodDamageEstimator(object):
         self.canRunInBackground = False
 
     def getParameterInfo(self):
-        crop = arcpy.Parameter(0, "crop_raster", "GPRasterLayer", "Input", "Required")
-        depth = arcpy.Parameter(1, "depth_rasters", "GPRasterLayer", "Input", "Required")
-        depth.multiValue = True
-        out_dir = arcpy.Parameter(2, "output_folder", "DEFolder", "Input", "Required")
-        crop_csv = arcpy.Parameter(3, "crop_csv", "DEFile", "Input", "Required")
-        event_csv = arcpy.Parameter(4, "event_csv", "DEFile", "Input", "Required")
+        crop = arcpy.Parameter(
+            displayName="Cropland Raster",
+            name="crop_raster",
+            datatype="GPRasterLayer",
+            parameterType="Required",
+            direction="Input",
+        )
+
+        depth = arcpy.Parameter(
+            displayName="Flood Depth Rasters",
+            name="depth_rasters",
+            datatype="GPRasterLayer",
+            parameterType="Required",
+            direction="Input",
+            multiValue=True,
+        )
+
+        out_dir = arcpy.Parameter(
+            displayName="Output Folder",
+            name="output_folder",
+            datatype="DEFolder",
+            parameterType="Required",
+            direction="Input",
+        )
+
+        crop_csv = arcpy.Parameter(
+            displayName="Crop Table CSV",
+            name="crop_csv",
+            datatype="DEFile",
+            parameterType="Required",
+            direction="Input",
+        )
+
+        event_csv = arcpy.Parameter(
+            displayName="Event Table CSV",
+            name="event_csv",
+            datatype="DEFile",
+            parameterType="Required",
+            direction="Input",
+        )
+
         return [crop, depth, out_dir, crop_csv, event_csv]
+
+    def updateParameters(self, params):
+        return
 
     def isLicensed(self):
         return True
