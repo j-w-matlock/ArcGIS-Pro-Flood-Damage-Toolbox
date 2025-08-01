@@ -21,6 +21,52 @@ class AgFloodDamageEstimator(object):
         self.canRunInBackground = False
 
     def getParameterInfo(self):
+        crop = arcpy.Parameter(
+            displayName="Cropland Raster",
+            name="crop_raster",
+            datatype="GPRasterLayer",
+            parameterType="Required",
+            direction="Input",
+        )
+
+        depth = arcpy.Parameter(
+            displayName="Flood Depth Rasters",
+            name="depth_rasters",
+            datatype="GPRasterLayer",
+            parameterType="Required",
+            direction="Input",
+            multiValue=True,
+        )
+
+        out_dir = arcpy.Parameter(
+            displayName="Output Folder",
+            name="output_folder",
+            datatype="DEFolder",
+            parameterType="Required",
+            direction="Input",
+        )
+
+        crop_csv = arcpy.Parameter(
+            displayName="Crop Table CSV",
+            name="crop_csv",
+            datatype="DEFile",
+            parameterType="Required",
+            direction="Input",
+        )
+
+        event_csv = arcpy.Parameter(
+            displayName="Event Table CSV",
+            name="event_csv",
+            datatype="DEFile",
+            parameterType="Required",
+            direction="Input",
+        )
+
+        return [crop, depth, out_dir, crop_csv, event_csv]
+
+    def updateParameters(self, params):
+        return
+
         crop = arcpy.Parameter(0, "crop_raster", "GPRasterLayer", "Input", "Required")
         depth = arcpy.Parameter(1, "depth_rasters", "GPRasterLayer", "Input", "Required")
         depth.multiValue = True
@@ -36,6 +82,9 @@ class AgFloodDamageEstimator(object):
         return
 
     def execute(self, params, messages):
+        crop_raster = params[0].valueAsText
+        depth_rasters = [v.valueAsText for v in params[1].values]
+
         import pandas as pd
         import numpy as np
         import os
@@ -44,6 +93,7 @@ class AgFloodDamageEstimator(object):
         import random
         crop_raster = params[0].valueAsText
         depth_rasters = params[1].values
+
         out_dir = params[2].valueAsText
         crop_csv = params[3].valueAsText
         event_csv = params[4].valueAsText
@@ -117,6 +167,7 @@ class AgFloodDamageEstimator(object):
                 cv = crop_table[code]["Value"]
                 months = crop_table[code]["GrowingSeason"]
                 base_month = event_table[label]["Month"]
+
                 rp = event_table[label]["RP"]
                 for s in range(500):
                     month = random.choice(months)
