@@ -1,7 +1,20 @@
 # ArcGIS-Pro-Flood-Damage-Toolbox
-A toolbox to estimate agricultural flood damages in ArcGIS Pro. The tool
-automatically lists the top 20 crop codes found in the selected cropland
-raster and all uploaded flood depth rasters. Users simply enter a value
-per acre, growing season, month and return period for each row before
-running the analysis.
-A toolbox to estimate agricultural flood damages in ArcGIS Pro.
+
+This toolbox estimates agricultural flood damages in ArcGIS Pro by
+sampling a Cropscape raster and one or more flood depth rasters.  The
+tool supports two ways to supply crop values and growing seasons:
+
+* provide a CSV file containing **CropCode**, **ValuePerAcre** and
+  **GrowingSeason** columns, or
+* specify a single value and growing season to apply to all sampled crop
+  codes.
+
+For each flood depth raster the toolbox produces a two–band raster
+containing crop type and damage fraction, a CSV summary table and
+performs a Monte Carlo analysis with user‑defined uncertainty and number
+of simulations.  Results are annualized using the U.S. Army Corps of
+Engineers trapezoidal expected annual damage method and written to CSV
+files for full transparency.
+
+The tool is designed to handle very large rasters efficiently while
+producing outputs that can withstand economic review.
