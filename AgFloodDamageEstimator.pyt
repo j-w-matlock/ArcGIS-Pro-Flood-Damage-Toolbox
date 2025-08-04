@@ -228,6 +228,9 @@ class AgFloodDamageEstimator(object):
             arr = arcpy.RasterToNumPyArray(path)
             if arr.shape != base_crop_arr.shape:
                 if arr.T.shape == base_crop_arr.shape:
+                    messages.addMessage(
+                        f"Transposed {path} to match crop raster orientation"
+                    )
                     arr = arr.T
                 else:
                     raise ValueError(
