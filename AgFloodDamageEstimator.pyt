@@ -221,6 +221,41 @@ class AgFloodDamageEstimator(object):
             name = re.sub(r"[^0-9A-Za-z_]+", "_", name)
             return name.strip("_")
 
+        messages.addMessage("Sampling depth rasters")
+        depth_arrays: Dict[str, np.ndarray] = {}
+
+        crop_ras = arcpy.Raster(crop_raster)
+        ll = arcpy.Point(crop_ras.extent.XMin, crop_ras.extent.YMin)
+        ncols, nrows = crop_ras.width, crop_ras.height
+
+        for path in depth_rasters:
+            label = _safe(path)
+            arr = arcpy.RasterToNumPyArray(
+                path, ll, ncols, nrows, nodata_to_value=0
+            )
+            if arr.shape != base_crop_arr.shape:
+                if arr.T.shape == base_crop_arr.shape:
+                    messages.addMessage(
+                        f"Transposed {path} to match crop raster orientation"
+                    )
+                    arr = arr.T
+                else:
+                    messages.addWarningMessage(
+                        f"Raster {path} could not be aligned and was skipped"
+                    )
+                    continue
+            depth_arrays[label] = arr
+        messages.addMessage(f"Processed {len(depth_arrays)} depth rasters")
+
+        value_arr = np.zeros_like(base_crop_arr, dtype=float)
+        for code, props in crop_table.items():
+            value_arr[base_crop_arr == code] = props["Value"]
+
+        damage_tables: Dict[str, float] = {}
+        for label, arr in depth_arrays.items():
+            mask = arr > 0
+            damage_tables[label] = float(value_arr[mask].sum())
+
         event_table: Dict[str, Dict[str, float]] = {}
         for row in event_info:
             if len(row) < 3:
@@ -245,6 +280,7 @@ class AgFloodDamageEstimator(object):
                     f"Return Period must be positive for raster {raster}"
                 )
             label = _safe(raster)
+            event_table[label] = {"Path": raster, "Month": month, "RP": rp}
 
         messages.addMessage(f"Top 50 crop codes: {list(crop_table.keys())}")
 
