@@ -237,7 +237,6 @@ class AgFloodDamageEstimator(object):
             mask = arr > 0
             damage_tables[label] = float(value_arr[mask].sum())
 
-        event_table: Dict[str, Dict[str, int]] = {}
         event_table: Dict[str, Dict[str, float]] = {}
         for row in event_info:
             if len(row) < 3:
@@ -262,14 +261,7 @@ class AgFloodDamageEstimator(object):
                     f"Return Period must be positive for raster {raster}"
                 )
             label = _safe(raster)
-            event_table[label] = {"Month": month, "RP": rp}
-                continue
-            label = _safe(row[0])
-            event_table[label] = {
-                "Path": row[0],
-                "Month": int(str(row[1])),
-                "RP": int(str(row[2]))
-            }
+            event_table[label] = {"Path": raster, "Month": month, "RP": rp}
 
         messages.addMessage(f"Top 50 crop codes: {list(crop_table.keys())}")
 
