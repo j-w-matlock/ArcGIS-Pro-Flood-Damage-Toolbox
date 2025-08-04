@@ -223,6 +223,16 @@ class AgFloodDamageEstimator(object):
 
         messages.addMessage("Sampling depth rasters")
         depth_arrays: Dict[str, np.ndarray] = {}
+
+        crop_ras = arcpy.Raster(crop_raster)
+        ll = arcpy.Point(crop_ras.extent.XMin, crop_ras.extent.YMin)
+        ncols, nrows = crop_ras.width, crop_ras.height
+
+        for path in depth_rasters:
+            label = _safe(path)
+            arr = arcpy.RasterToNumPyArray(
+                path, ll, ncols, nrows, nodata_to_value=0
+            )
         for path in depth_rasters:
             label = _safe(path)
             arr = arcpy.RasterToNumPyArray(path)
@@ -233,6 +243,11 @@ class AgFloodDamageEstimator(object):
                     )
                     arr = arr.T
                 else:
+                    messages.addWarningMessage(
+                        f"Raster {path} could not be aligned and was skipped"
+                    )
+                    continue
+            depth_arrays[label] = arr
                     raise ValueError(
                         f"Raster {path} shape {arr.shape} does not match crop raster {base_crop_arr.shape}"
                     )
