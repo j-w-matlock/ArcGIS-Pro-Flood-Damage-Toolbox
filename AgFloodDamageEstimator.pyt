@@ -166,21 +166,52 @@ class AgFloodDamageEstimator(object):
         counts.pop(0, None)
         top_codes = [c for c, _ in counts.most_common(50)]
 
+        def _parse_months(month_str, context):
+            months: List[int] = []
+            for m in str(month_str).split(','):
+                m = m.strip()
+                if not m:
+                    continue
+                try:
+                    mi = int(m)
+                except Exception:
+                    raise ValueError(f"Invalid month '{m}' in {context}; must be 1-12")
+                if mi < 1 or mi > 12:
+                    raise ValueError(f"Month {mi} in {context} out of range 1-12")
+                months.append(mi)
+            return months
+
         crop_table: Dict[int, Dict[str, object]] = {}
         if crop_csv:
             df_csv = pd.read_csv(crop_csv)
-            for _, row in df_csv.iterrows():
+            required = {"CropCode", "ValuePerAcre", "GrowingSeason"}
+            missing = required - set(df_csv.columns)
+            if missing:
+                raise ValueError(
+                    f"Crop CSV missing required columns: {', '.join(sorted(missing))}"
+                )
+            for idx, row in df_csv.iterrows():
                 try:
-                    code = int(row[0])
-                    value = float(row[1])
-                    months = [int(m) for m in str(row[2]).split(',') if m]
-                except (ValueError, TypeError):
-                    continue
+                    code = int(row["CropCode"])
+                except Exception:
+                    raise ValueError(
+                        f"Invalid CropCode at row {idx}: {row['CropCode']}"
+                    )
+                try:
+                    value = float(row["ValuePerAcre"])
+                except Exception:
+                    raise ValueError(
+                        f"Invalid ValuePerAcre for crop code {row['CropCode']}"
+                    )
+                months = _parse_months(row["GrowingSeason"], f"crop code {code}")
                 crop_table[code] = {"Value": value, "GrowingSeason": months}
         else:
-            months = [int(m) for m in str(default_months).split(',') if m]
+            months = _parse_months(default_months, "default growing season")
             for code in top_codes:
-                crop_table[code] = {"Value": float(default_val), "GrowingSeason": months}
+                crop_table[code] = {
+                    "Value": float(default_val),
+                    "GrowingSeason": months,
+                }
 
         crop_table = {c: v for c, v in crop_table.items() if c in top_codes}
 
@@ -189,14 +220,30 @@ class AgFloodDamageEstimator(object):
             name = re.sub(r"[^0-9A-Za-z_]+", "_", name)
             return name.strip("_")
 
-        event_table: Dict[str, Dict[str, int]] = {}
+        event_table: Dict[str, Dict[str, float]] = {}
         for row in event_info:
             if len(row) < 3:
-                continue
-            label = _safe(row[0])
-            event_table[label] = {
-                "Month": int(str(row[1])),
-                "RP": int(str(row[2]))
-            }
+                raise ValueError(
+                    "Event information rows must include Raster, Month, and Return Period"
+                )
+            raster = row[0]
+            if not arcpy.Exists(raster):
+                raise ValueError(f"Raster path does not exist: {raster}")
+            try:
+                month = int(str(row[1]))
+            except Exception:
+                raise ValueError(f"Invalid Month '{row[1]}' for raster {raster}")
+            if month < 1 or month > 12:
+                raise ValueError(f"Month {month} for raster {raster} out of range 1-12")
+            try:
+                rp = float(str(row[2]))
+            except Exception:
+                raise ValueError(f"Invalid Return Period '{row[2]}' for raster {raster}")
+            if rp <= 0:
+                raise ValueError(
+                    f"Return Period must be positive for raster {raster}"
+                )
+            label = _safe(raster)
+            event_table[label] = {"Month": month, "RP": rp}
 
         messages.addMessage(f"Top 50 crop codes: {list(crop_table.keys())}")
