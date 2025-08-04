@@ -225,6 +225,15 @@ class AgFloodDamageEstimator(object):
         depth_arrays: Dict[str, np.ndarray] = {}
         for path in depth_rasters:
             label = _safe(path)
+            arr = arcpy.RasterToNumPyArray(path)
+            if arr.shape != base_crop_arr.shape:
+                if arr.T.shape == base_crop_arr.shape:
+                    arr = arr.T
+                else:
+                    raise ValueError(
+                        f"Raster {path} shape {arr.shape} does not match crop raster {base_crop_arr.shape}"
+                    )
+            depth_arrays[label] = arr
             depth_arrays[label] = arcpy.RasterToNumPyArray(path)
         messages.addMessage(f"Processed {len(depth_arrays)} depth rasters")
 
