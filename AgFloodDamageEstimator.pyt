@@ -150,10 +150,17 @@ class AgFloodDamageEstimator(object):
             default_months.enabled = True
 
         # Populate event table from depth rasters if empty
+        if (
+            depth_param.altered
+            and not event_table_param.altered
+            and depth_param.valueAsText
+        ):
+
         if depth_param.altered and not event_table_param.altered and depth_param.values:
+
             vt = arcpy.ValueTable(0)
-            for v in depth_param.values:
-                vt.addRow([v, "", ""])
+            for path in depth_param.valueAsText.split(";"):
+                vt.addRow([path, "", ""])
             event_table_param.value = vt
 
         return
@@ -161,7 +168,7 @@ class AgFloodDamageEstimator(object):
     # ------------------------------------------------------------------
     def execute(self, params, messages):  # noqa: C901 - ArcPy style
         crop_raster = params[0].valueAsText
-        depth_rasters = [v.valueAsText for v in params[1].values]
+        depth_rasters = params[1].valueAsText.split(";")
         out_dir = params[2].valueAsText
         crop_csv = params[3].valueAsText
         default_val = params[4].value
@@ -209,6 +216,10 @@ class AgFloodDamageEstimator(object):
         for row in event_info:
             if len(row) < 3:
                 continue
+            label = os.path.splitext(os.path.basename(str(row[0])))[0]
+            event_table[label] = {
+                "Month": int(str(row[1])),
+                "RP": int(str(row[2])),
             label = os.path.splitext(os.path.basename(row[0]))[0]
             event_table[label] = {
                 "Month": int(row[1]),
