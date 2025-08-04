@@ -161,6 +161,7 @@ class AgFloodDamageEstimator(object):
         if seed not in (None, ""):
             np.random.seed(int(seed))
 
+        messages.addMessage("Sampling crop raster")
         base_crop_arr = arcpy.RasterToNumPyArray(crop_raster)
         counts = Counter(base_crop_arr.flatten())
         counts.pop(0, None)
@@ -189,6 +190,22 @@ class AgFloodDamageEstimator(object):
             name = re.sub(r"[^0-9A-Za-z_]+", "_", name)
             return name.strip("_")
 
+        messages.addMessage("Sampling depth rasters")
+        depth_arrays: Dict[str, np.ndarray] = {}
+        for path in depth_rasters:
+            label = _safe(path)
+            depth_arrays[label] = arcpy.RasterToNumPyArray(path)
+        messages.addMessage(f"Processed {len(depth_arrays)} depth rasters")
+
+        value_arr = np.zeros_like(base_crop_arr, dtype=float)
+        for code, props in crop_table.items():
+            value_arr[base_crop_arr == code] = props["Value"]
+
+        damage_tables: Dict[str, float] = {}
+        for label, arr in depth_arrays.items():
+            mask = arr > 0
+            damage_tables[label] = float(value_arr[mask].sum())
+
         event_table: Dict[str, Dict[str, int]] = {}
         for row in event_info:
             if len(row) < 3:
@@ -200,3 +217,32 @@ class AgFloodDamageEstimator(object):
             }
 
         messages.addMessage(f"Top 50 crop codes: {list(crop_table.keys())}")
+
+        arcpy.SetProgressor("step", "Running Monte Carlo simulations", 0, mc_sims, 1)
+        mc_totals: List[float] = []
+        for i in range(mc_sims):
+            arcpy.SetProgressorLabel(f"Simulation {i + 1} of {mc_sims}")
+            total = 0.0
+            for dmg in damage_tables.values():
+                factor = max(np.random.normal(1.0, mc_std), 0)
+                total += dmg * factor
+            mc_totals.append(total)
+            arcpy.SetProgressorPosition(i + 1)
+        arcpy.ResetProgressor()
+        messages.addMessage(f"Completed {mc_sims} simulations")
+
+        messages.addMessage("Aggregating simulation results")
+        mean_damage = float(np.mean(mc_totals))
+        sd_damage = float(np.std(mc_totals))
+        messages.addMessage(
+            f"Mean damage: {mean_damage:,.2f}; Standard deviation: {sd_damage:,.2f}"
+        )
+
+        out_csv = os.path.join(out_dir, "damage_summary.csv")
+        pd.DataFrame({
+            "MeanDamage": [mean_damage],
+            "StdDev": [sd_damage],
+            "Simulations": [mc_sims],
+            "DepthRasters": [len(depth_arrays)],
+        }).to_csv(out_csv, index=False)
+        messages.addMessage(f"Results written to {out_csv}")
