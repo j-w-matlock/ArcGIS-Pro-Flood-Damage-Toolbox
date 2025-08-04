@@ -155,6 +155,9 @@ class AgFloodDamageEstimator(object):
             and not event_table_param.altered
             and depth_param.valueAsText
         ):
+
+        if depth_param.altered and not event_table_param.altered and depth_param.values:
+
             vt = arcpy.ValueTable(0)
             for path in depth_param.valueAsText.split(";"):
                 vt.addRow([path, "", ""])
@@ -217,6 +220,10 @@ class AgFloodDamageEstimator(object):
             event_table[label] = {
                 "Month": int(str(row[1])),
                 "RP": int(str(row[2])),
+            label = os.path.splitext(os.path.basename(row[0]))[0]
+            event_table[label] = {
+                "Month": int(row[1]),
+                "RP": int(row[2]),
             }
 
         all_summaries: Dict[str, pd.DataFrame] = {}
