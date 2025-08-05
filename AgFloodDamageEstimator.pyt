@@ -84,6 +84,8 @@ class AgFloodDamageEstimator(object):
 
         crop_ras = arcpy.Raster(crop_raster)
         pixel_acres = crop_ras.meanCellWidth * crop_ras.meanCellHeight / 4046.86
+        ll = arcpy.Point(crop_ras.extent.XMin, crop_ras.extent.YMin)
+        ncols, nrows = crop_ras.width, crop_ras.height
 
         damage_curve_pts = parse_curve(curve_str)
         results = []
@@ -94,7 +96,16 @@ class AgFloodDamageEstimator(object):
             month = int(row[1])
             rp = float(row[2])
 
-            depth_arr = arcpy.RasterToNumPyArray(raster_path)
+            depth_arr = arcpy.RasterToNumPyArray(
+                raster_path, ll, ncols, nrows, nodata_to_value=0
+            )
+            if depth_arr.shape != crop_arr.shape:
+                if depth_arr.T.shape == crop_arr.shape:
+                    depth_arr = depth_arr.T
+                else:
+                    raise ValueError(
+                        f"Raster {raster_path} could not be aligned with crop raster"
+                    )
             frac = interp_curve(depth_arr, damage_curve_pts)
 
             grow_mask = np.isin(crop_arr, [c for c in top_codes if month in crop_table[c]["GrowingSeason"]])
