@@ -41,6 +41,17 @@ def interp_damage(depth, curve):
             return f0 + (f1 - f0) * (depth - d0) / (d1 - d0)
     return curve[-1][1]
 
+
+def intersect_extent(ext1, ext2):
+    """Return overlap of two extents or None if disjoint."""
+    xmin = max(ext1.XMin, ext2.XMin)
+    ymin = max(ext1.YMin, ext2.YMin)
+    xmax = min(ext1.XMax, ext2.XMax)
+    ymax = min(ext1.YMax, ext2.YMax)
+    if xmin >= xmax or ymin >= ymax:
+        return None
+    return xmin, ymin, xmax, ymax
+
 class Toolbox(object):
     def __init__(self):
         self.label = "Flood Damage Toolbox"
@@ -98,7 +109,6 @@ class AgFloodDamageEstimator(object):
 
         damage_curve_pts = parse_curve(curve_str)
         crop_ras = arcpy.Raster(crop_path)
-        crop_arr = arcpy.RasterToNumPyArray(crop_ras)
 
         # Cell area in acres
         desc = arcpy.Describe(crop_ras)
@@ -125,7 +135,7 @@ class AgFloodDamageEstimator(object):
             clipped = os.path.join(out_dir, f"{label}_clipped.tif")
 
             arcpy.env.snapRaster = crop_ras
-            arcpy.env.extent = crop_ras.extent
+            arcpy.env.cellSize = crop_ras
 
             arcpy.management.ProjectRaster(
                 depth_str,
@@ -135,20 +145,23 @@ class AgFloodDamageEstimator(object):
                 crop_ras.meanCellWidth,
             )
 
-            # Clip to crop raster template
-            arcpy.management.Clip(aligned, "#", clipped, crop_path, "0", "ClippingGeometry")
-            # Clip using string extent from crop raster
-            extent_str = (
-                f"{crop_ras.extent.XMin} {crop_ras.extent.YMin} {crop_ras.extent.XMax} {crop_ras.extent.YMax}"
-            )
-            arcpy.management.Clip(aligned, extent_str, clipped, crop_path, "0", "ClippingGeometry")
+            aligned_desc = arcpy.Describe(aligned)
+            inter = intersect_extent(aligned_desc.extent, crop_ras.extent)
+            if not inter:
+                raise ValueError(f"Depth raster {depth_str} does not overlap crop raster extent")
+            extent_str = f"{inter[0]} {inter[1]} {inter[2]} {inter[3]}"
+
+            crop_clip = os.path.join("in_memory", f"{label}_crop")
+            arcpy.management.Clip(crop_path, extent_str, crop_clip, "#", "0", "NONE", "MAINTAIN_EXTENT")
+            arcpy.management.Clip(aligned, extent_str, clipped, "#", "0", "NONE", "MAINTAIN_EXTENT")
+            crop_arr = arcpy.RasterToNumPyArray(crop_clip)
             depth_arr = arcpy.RasterToNumPyArray(clipped)
+            arcpy.management.Delete(crop_clip)
             if depth_arr.shape != crop_arr.shape:
                 raise ValueError(
                     f"Masked depth raster {label} shape does not match crop raster. "
                     f"Crop: {crop_arr.shape}, Depth: {depth_arr.shape}"
                 )
-
             # Check growing season
             try:
                 month = int(month)
