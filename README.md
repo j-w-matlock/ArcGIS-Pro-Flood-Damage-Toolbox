@@ -9,6 +9,11 @@ tool supports two ways to supply crop values and growing seasons:
 * specify a single value and growing season to apply to all sampled crop
   codes.
 
+If the *Default Growing Season* parameter is left blank, crops without a
+specified season are treated as year-round. When an event month falls
+outside a crop's listed growing season, the tool assumes year-round
+susceptibility and emits a warning.
+
 For each flood depth raster the toolbox produces a two–band raster
 containing crop type and damage fraction, a CSV summary table and
 performs a Monte Carlo analysis with user‑defined uncertainty and number
