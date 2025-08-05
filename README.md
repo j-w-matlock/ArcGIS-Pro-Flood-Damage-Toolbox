@@ -17,9 +17,11 @@ susceptibility and emits a warning.
 For each flood depth raster the toolbox produces a two–band raster
 containing crop type and damage fraction, a CSV summary table and
 performs a Monte Carlo analysis with user‑defined uncertainty and number
-of simulations.  Results are annualized using the U.S. Army Corps of
-Engineers trapezoidal expected annual damage method and written to CSV
-files for full transparency.
+of simulations.  Results are calculated for each impacted crop and
+annualized using the U.S. Army Corps of Engineers trapezoidal expected
+annual damage method.  A detailed Excel workbook with per‑event damages,
+per‑crop expected annual damages and illustrative charts is created for
+full transparency.
 
 The tool is designed to handle very large rasters efficiently while
 producing outputs that can withstand economic review.

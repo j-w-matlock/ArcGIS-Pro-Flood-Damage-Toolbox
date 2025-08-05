@@ -173,9 +173,11 @@ class AgFloodDamageEstimator(object):
                 )
 
             mask = (crop_arr > 0) & (depth_arr > 0)
-            damages_run = []
+            crop_codes = np.unique(crop_arr[mask]).astype(int)
+            damages_runs = {c: [] for c in crop_codes}
+
             for _ in range(runs):
-                damaged = 0.0
+                damaged = {c: 0.0 for c in crop_codes}
                 for i in range(depth_arr.shape[0]):
                     for j in range(depth_arr.shape[1]):
                         if mask[i, j]:
@@ -184,23 +186,82 @@ class AgFloodDamageEstimator(object):
                             if stddev > 0:
                                 f += rand.gauss(0, stddev)
                                 f = min(max(f, 0), 1)
-                            damaged += f * value_acre * cell_area_acres
-                damages_run.append(damaged)
-            avg_damage = float(sum(damages_run) / runs)
+                            crop_code = int(crop_arr[i, j])
+                            damaged[crop_code] += f * value_acre * cell_area_acres
+                for c in crop_codes:
+                    damages_runs[c].append(damaged[c])
 
-            results.append({"Label": label, "RP": float(rp), "Damage": avg_damage})
+            for c in crop_codes:
+                avg_damage = float(sum(damages_runs[c]) / runs)
+                results.append({"Label": label, "RP": float(rp), "Crop": int(c), "Damage": avg_damage})
 
         if not results:
             raise ValueError("No valid events provided")
 
         # --- Trapezoidal EAD ---
-        df_events = pd.DataFrame(results).sort_values("RP", ascending=False).reset_index(drop=True)
-        probs = 1 / df_events["RP"].to_numpy()
-        damages = df_events["Damage"].to_numpy()
-        probs = np.concatenate(([0.0], probs, [1.0]))
-        damages = np.concatenate(([damages[0]], damages, [0.0]))
-        ead = float(np.trapz(damages, probs))
+        df_events = pd.DataFrame(results)
 
+        def calc_ead(df):
+            df = df.sort_values("RP", ascending=False)
+            probs = 1 / df["RP"].to_numpy()
+            damages = df["Damage"].to_numpy()
+            probs = np.concatenate(([0.0], probs, [1.0]))
+            damages = np.concatenate(([damages[0]], damages, [0.0]))
+            return float(np.trapz(damages, probs))
+
+        # Total EAD
+        df_total = df_events.groupby(["Label", "RP"], as_index=False)["Damage"].sum()
+        ead_total = calc_ead(df_total)
+
+        # EAD per crop
+        eads_crop = {int(c): calc_ead(g) for c, g in df_events.groupby("Crop")}
+
+        # Write CSV for overall EAD
         with open(os.path.join(out_dir, "ead.csv"), "w") as f:
-            f.write(f"EAD,{ead}\n")
-        messages.addMessage(f"Expected Annual Damage (Trapezoidal): {ead:,.0f}")
+            f.write(f"EAD,{ead_total}\n")
+        messages.addMessage(f"Expected Annual Damage (Trapezoidal): {ead_total:,.0f}")
+
+        # Export detailed results to Excel with charts
+        excel_path = os.path.join(out_dir, "damage_results.xlsx")
+        with pd.ExcelWriter(excel_path, engine="xlsxwriter") as writer:
+            # Raw per-event damages
+            df_events.to_excel(writer, sheet_name="EventDamages", index=False)
+
+            # Pivot table for charting
+            pivot = df_events.pivot_table(index="Label", columns="Crop", values="Damage", fill_value=0)
+            pivot.to_excel(writer, sheet_name="EventPivot")
+
+            # EAD per crop table
+            df_ead = pd.DataFrame([{"Crop": k, "EAD": v} for k, v in eads_crop.items()])
+            df_ead.to_excel(writer, sheet_name="EAD", index=False)
+
+            workbook = writer.book
+
+            # Chart for event damages
+            worksheet_pivot = writer.sheets["EventPivot"]
+            chart1 = workbook.add_chart({'type': 'column', 'subtype': 'stacked'})
+            for idx, crop in enumerate(pivot.columns):
+                chart1.add_series({
+                    'name': str(crop),
+                    'categories': ['EventPivot', 1, 0, len(pivot), 0],
+                    'values': ['EventPivot', 1, idx + 1, len(pivot), idx + 1],
+                })
+            chart1.set_title({'name': 'Damage by Event and Crop'})
+            chart1.set_x_axis({'name': 'Event'})
+            chart1.set_y_axis({'name': 'Damage'})
+            chart1.set_style(10)
+            worksheet_pivot.insert_chart('H2', chart1)
+
+            # Chart for EAD per crop
+            worksheet_ead = writer.sheets["EAD"]
+            chart2 = workbook.add_chart({'type': 'column'})
+            chart2.add_series({
+                'name': 'EAD',
+                'categories': ['EAD', 1, 0, len(df_ead), 0],
+                'values': ['EAD', 1, 1, len(df_ead), 1],
+            })
+            chart2.set_title({'name': 'Expected Annual Damage by Crop'})
+            chart2.set_x_axis({'name': 'Crop'})
+            chart2.set_y_axis({'name': 'EAD'})
+            chart2.set_style(10)
+            worksheet_ead.insert_chart('D2', chart2)
