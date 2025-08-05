@@ -2,6 +2,7 @@ import arcpy
 import os
 import numpy as np
 import pandas as pd
+from openpyxl.chart import BarChart, Reference
 
 from random import Random
 
@@ -223,7 +224,7 @@ class AgFloodDamageEstimator(object):
 
         # Export detailed results to Excel with charts
         excel_path = os.path.join(out_dir, "damage_results.xlsx")
-        with pd.ExcelWriter(excel_path, engine="xlsxwriter") as writer:
+        with pd.ExcelWriter(excel_path, engine="openpyxl") as writer:
             # Raw per-event damages
             df_events.to_excel(writer, sheet_name="EventDamages", index=False)
 
@@ -235,33 +236,31 @@ class AgFloodDamageEstimator(object):
             df_ead = pd.DataFrame([{"Crop": k, "EAD": v} for k, v in eads_crop.items()])
             df_ead.to_excel(writer, sheet_name="EAD", index=False)
 
-            workbook = writer.book
-
             # Chart for event damages
             worksheet_pivot = writer.sheets["EventPivot"]
-            chart1 = workbook.add_chart({'type': 'column', 'subtype': 'stacked'})
-            for idx, crop in enumerate(pivot.columns):
-                chart1.add_series({
-                    'name': str(crop),
-                    'categories': ['EventPivot', 1, 0, len(pivot), 0],
-                    'values': ['EventPivot', 1, idx + 1, len(pivot), idx + 1],
-                })
-            chart1.set_title({'name': 'Damage by Event and Crop'})
-            chart1.set_x_axis({'name': 'Event'})
-            chart1.set_y_axis({'name': 'Damage'})
-            chart1.set_style(10)
-            worksheet_pivot.insert_chart('H2', chart1)
+            max_row = pivot.shape[0] + 1
+            max_col = pivot.shape[1] + 1
+            data_ref = Reference(worksheet_pivot, min_col=2, min_row=1, max_col=max_col, max_row=max_row)
+            cats_ref = Reference(worksheet_pivot, min_col=1, min_row=2, max_row=max_row)
+            chart1 = BarChart()
+            chart1.type = "col"
+            chart1.grouping = "stacked"
+            chart1.title = "Damage by Event and Crop"
+            chart1.x_axis.title = "Event"
+            chart1.y_axis.title = "Damage"
+            chart1.add_data(data_ref, titles_from_data=True)
+            chart1.set_categories(cats_ref)
+            worksheet_pivot.add_chart(chart1, "H2")
 
             # Chart for EAD per crop
             worksheet_ead = writer.sheets["EAD"]
-            chart2 = workbook.add_chart({'type': 'column'})
-            chart2.add_series({
-                'name': 'EAD',
-                'categories': ['EAD', 1, 0, len(df_ead), 0],
-                'values': ['EAD', 1, 1, len(df_ead), 1],
-            })
-            chart2.set_title({'name': 'Expected Annual Damage by Crop'})
-            chart2.set_x_axis({'name': 'Crop'})
-            chart2.set_y_axis({'name': 'EAD'})
-            chart2.set_style(10)
-            worksheet_ead.insert_chart('D2', chart2)
+            data_ref2 = Reference(worksheet_ead, min_col=2, min_row=1, max_row=len(df_ead) + 1)
+            cats_ref2 = Reference(worksheet_ead, min_col=1, min_row=2, max_row=len(df_ead) + 1)
+            chart2 = BarChart()
+            chart2.type = "col"
+            chart2.title = "Expected Annual Damage by Crop"
+            chart2.x_axis.title = "Crop"
+            chart2.y_axis.title = "EAD"
+            chart2.add_data(data_ref2, titles_from_data=True)
+            chart2.set_categories(cats_ref2)
+            worksheet_ead.add_chart(chart2, "D2")
