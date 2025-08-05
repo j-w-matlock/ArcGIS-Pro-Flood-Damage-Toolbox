@@ -5,6 +5,22 @@ import pandas as pd
 
 from random import Random
 
+
+def parse_months(month_str):
+    """Return a set of valid month numbers (1-12) from a comma string."""
+    if not month_str:
+        return None
+    months = set()
+    for m in month_str.split(','):
+        m = m.strip()
+        if not m:
+            continue
+        val = int(m)
+        if not 1 <= val <= 12:
+            raise ValueError("Months must be between 1 and 12")
+        months.add(val)
+    return months
+
 def parse_curve(curve_str):
     try:
         points = [tuple(map(float, pt.split(':'))) for pt in curve_str.split(',')]
@@ -44,20 +60,27 @@ class AgFloodDamageEstimator(object):
                               parameterType="Required", direction="Output")
         val = arcpy.Parameter(displayName="Default Crop Value per Acre", name="value_acre", datatype="Double",
                               parameterType="Required", direction="Input")
+        val.value = 1200
         season = arcpy.Parameter(displayName="Default Growing Season (comma separated months; blank = year-round, mismatches warn)",
                                  name="season_months", datatype="String", parameterType="Optional", direction="Input")
+        season.value = "6"
         curve = arcpy.Parameter(displayName="Depth-Damage Curve (depth:fraction, comma separated)",
                                 name="curve", datatype="String", parameterType="Required", direction="Input")
+        curve.value = "0:1,1:1"
         event_info = arcpy.Parameter(displayName="Event Information", name="event_info", datatype="Value Table",
                                      parameterType="Required", direction="Input")
         event_info.columns = [["Raster Layer", "Raster"], ["GPLong", "Month"], ["GPLong", "Return Period"]]
+        event_info.value = [["", 6, 100]]
 
         stddev = arcpy.Parameter(displayName="Uncertainty Std. Dev. (fraction of loss)", name="uncertainty", datatype="Double",
                                  parameterType="Required", direction="Input")
+        stddev.value = 0.1
         mc = arcpy.Parameter(displayName="Monte Carlo Simulations", name="mc_runs", datatype="Long",
                              parameterType="Required", direction="Input")
+        mc.value = 10
         seed = arcpy.Parameter(displayName="Random Seed", name="random_seed", datatype="Long",
                                parameterType="Required", direction="Input")
+        seed.value = 10
         return [crop, out, val, season, curve, event_info, stddev, mc, seed]
 
     def execute(self, params, messages):
@@ -77,11 +100,26 @@ class AgFloodDamageEstimator(object):
         crop_ras = arcpy.Raster(crop_path)
         crop_arr = arcpy.RasterToNumPyArray(crop_ras)
 
+        # Cell area in acres
+        desc = arcpy.Describe(crop_ras)
+        meters_per_unit = desc.spatialReference.metersPerUnit
+        cell_area_acres = (
+            desc.meanCellWidth * desc.meanCellHeight * meters_per_unit ** 2 / 4046.8564224
+        )
+
+        # Growing season months as set of ints or None for year-round
+        season_months = parse_months(season_str)
+
         results = []
 
         for row in event_table:
             depth_path, month, rp = row
             depth_str = depth_path.valueAsText if hasattr(depth_path, 'valueAsText') else str(depth_path)
+            if not depth_str:
+                continue
+            depth_desc = arcpy.Describe(depth_str)
+            if crop_ras.extent.disjoint(depth_desc.extent):
+                raise ValueError(f"Depth raster {depth_str} does not overlap crop raster extent")
             label = os.path.splitext(os.path.basename(depth_str))[0].replace(" ", "_")
             aligned = os.path.join(out_dir, f"{label}_aligned.tif")
             clipped = os.path.join(out_dir, f"{label}_clipped.tif")
@@ -89,40 +127,62 @@ class AgFloodDamageEstimator(object):
             arcpy.env.snapRaster = crop_ras
             arcpy.env.extent = crop_ras.extent
 
-            arcpy.management.ProjectRaster(depth_str, aligned, crop_ras.spatialReference, "NEAREST",
-                                           crop_ras.meanCellWidth)
+            arcpy.management.ProjectRaster(
+                depth_str,
+                aligned,
+                crop_ras.spatialReference,
+                "NEAREST",
+                crop_ras.meanCellWidth,
+            )
 
-            aligned_ras = arcpy.Raster(aligned)
-
-            # Clip using string extent from crop raster
-            extent_str = f"{crop_ras.extent.XMin} {crop_ras.extent.YMin} {crop_ras.extent.XMax} {crop_ras.extent.YMax}"
-            arcpy.management.Clip(aligned, extent_str, clipped, crop_path, "0", "ClippingGeometry")
+            # Clip to crop raster template
+            arcpy.management.Clip(aligned, "#", clipped, crop_path, "0", "ClippingGeometry")
 
             depth_arr = arcpy.RasterToNumPyArray(clipped)
             if depth_arr.shape != crop_arr.shape:
-                raise ValueError(f"Masked depth raster {label} shape does not match crop raster. "
-                                 f"Crop: {crop_arr.shape}, Depth: {depth_arr.shape}")
+                raise ValueError(
+                    f"Masked depth raster {label} shape does not match crop raster. "
+                    f"Crop: {crop_arr.shape}, Depth: {depth_arr.shape}"
+                )
+
+            # Check growing season
+            try:
+                month = int(month)
+            except (TypeError, ValueError):
+                month = None
+            if season_months and month and month not in season_months:
+                messages.addWarningMessage(
+                    f"Event month {month} outside growing season; treated as year-round"
+                )
 
             mask = (crop_arr > 0) & (depth_arr > 0)
-            damaged = 0
+            damages_run = []
+            for _ in range(runs):
+                damaged = 0.0
+                for i in range(depth_arr.shape[0]):
+                    for j in range(depth_arr.shape[1]):
+                        if mask[i, j]:
+                            d = depth_arr[i, j]
+                            f = interp_damage(d, damage_curve_pts)
+                            if stddev > 0:
+                                f += rand.gauss(0, stddev)
+                                f = min(max(f, 0), 1)
+                            damaged += f * value_acre * cell_area_acres
+                damages_run.append(damaged)
+            avg_damage = float(sum(damages_run) / runs)
 
-            for i in range(depth_arr.shape[0]):
-                for j in range(depth_arr.shape[1]):
-                    if mask[i, j]:
-                        d = depth_arr[i, j]
-                        f = interp_damage(d, damage_curve_pts)
-                        if stddev > 0:
-                            f += rand.gauss(0, stddev)
-                            f = min(max(f, 0), 1)
-                        damaged += f * value_acre
+            results.append({"Label": label, "RP": float(rp), "Damage": avg_damage})
 
-            results.append({"Label": label, "RP": float(rp), "Damage": damaged})
+        if not results:
+            raise ValueError("No valid events provided")
 
         # --- Trapezoidal EAD ---
-        df_events = pd.DataFrame(results).sort_values("RP").reset_index(drop=True)
-        probs = 1 / df_events["RP"]
-        damages = df_events["Damage"]
-        ead = float(np.trapz(y=damages, x=probs))
+        df_events = pd.DataFrame(results).sort_values("RP", ascending=False).reset_index(drop=True)
+        probs = 1 / df_events["RP"].to_numpy()
+        damages = df_events["Damage"].to_numpy()
+        probs = np.concatenate(([0.0], probs, [1.0]))
+        damages = np.concatenate(([damages[0]], damages, [0.0]))
+        ead = float(np.trapz(damages, probs))
 
         with open(os.path.join(out_dir, "ead.csv"), "w") as f:
             f.write(f"EAD,{ead}\n")
