@@ -25,7 +25,7 @@ class AgFloodDamageEstimator(object):
         default_val = arcpy.Parameter("Default Crop Value per Acre", "default_crop_value", "GPDouble", "Optional", "Input")
         default_val.value = 1200
 
-        default_months = arcpy.Parameter("Default Growing Season (comma separated months)", "default_growing_season", "GPString", "Optional", "Input")
+        default_months = arcpy.Parameter("Default Growing Season (comma separated months; blank = year-round, mismatches warn)", "default_growing_season", "GPString", "Optional", "Input")
         default_months.value = "6"
 
         damage_curve = arcpy.Parameter("Depth-Damage Curve (depth:fraction, comma separated)", "damage_curve", "GPString", "Required", "Input")
@@ -108,7 +108,13 @@ class AgFloodDamageEstimator(object):
                     )
             frac = interp_curve(depth_arr, damage_curve_pts)
 
-            grow_mask = np.isin(crop_arr, [c for c in top_codes if month in crop_table[c]["GrowingSeason"]])
+            for c in top_codes:
+                season = crop_table[c].get("GrowingSeason", [])
+                if season and month not in season:
+                    messages.addWarningMessage(
+                        f"Event month {month} not in growing season for crop code {c}; assuming year-round."
+                    )
+            grow_mask = np.isin(crop_arr, top_codes)
             frac = np.where(grow_mask, frac, 0)
             val_arr = val_map[crop_arr]
             damage_arr = frac * val_arr * pixel_acres
