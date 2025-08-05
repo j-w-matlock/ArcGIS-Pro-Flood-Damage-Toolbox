@@ -137,7 +137,11 @@ class AgFloodDamageEstimator(object):
 
             # Clip to crop raster template
             arcpy.management.Clip(aligned, "#", clipped, crop_path, "0", "ClippingGeometry")
-
+            # Clip using string extent from crop raster
+            extent_str = (
+                f"{crop_ras.extent.XMin} {crop_ras.extent.YMin} {crop_ras.extent.XMax} {crop_ras.extent.YMax}"
+            )
+            arcpy.management.Clip(aligned, extent_str, clipped, crop_path, "0", "ClippingGeometry")
             depth_arr = arcpy.RasterToNumPyArray(clipped)
             if depth_arr.shape != crop_arr.shape:
                 raise ValueError(
