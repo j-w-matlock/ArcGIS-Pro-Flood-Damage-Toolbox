@@ -16,8 +16,8 @@ class AgFloodDamageEstimator(object):
         self.canRunInBackground = False
 
     def getParameterInfo(self):
-        crop = arcpy.Parameter("Cropland Raster", "crop_raster", "GPRasterLayer", "Required", "Input")
-        depths = arcpy.Parameter("Flood Depth Rasters", "depth_rasters", "GPRasterLayer", "Required", "Input")
+        crop = arcpy.Parameter("Cropland Raster", "crop_raster", "Raster Layer", "Required", "Input")
+        depths = arcpy.Parameter("Flood Depth Rasters", "depth_rasters", "Raster Layer", "Required", "Input")
         depths.multiValue = True
         out_dir = arcpy.Parameter("Output Folder", "output_folder", "DEFolder", "Required", "Input")
 
@@ -31,7 +31,7 @@ class AgFloodDamageEstimator(object):
         damage_curve.value = "0:0,1:1"
 
         event_info = arcpy.Parameter("Event Information", "event_info", "GPValueTable", "Required", "Input")
-        event_info.columns = [["GPRasterLayer", "Raster"], ["GPLong", "Month"], ["GPLong", "Return Period"]]
+        event_info.columns = [["Raster Layer", "Raster"], ["GPLong", "Month"], ["GPLong", "Return Period"]]
 
         mc_std = arcpy.Parameter("Uncertainty Std. Dev. (fraction of loss)", "mc_std", "GPDouble", "Optional", "Input")
         mc_std.value = 0.1
