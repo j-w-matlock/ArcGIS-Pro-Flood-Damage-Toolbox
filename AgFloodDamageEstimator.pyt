@@ -2,7 +2,6 @@ import arcpy
 import os
 import pandas as pd
 import numpy as np
-from collections import Counter
 
 class Toolbox(object):
     def __init__(self):
@@ -73,13 +72,12 @@ class AgFloodDamageEstimator(object):
             return [int(m.strip()) for m in s.split(",") if m.strip()]
 
         crop_arr = arcpy.RasterToNumPyArray(crop_raster)
-        counts = Counter(crop_arr.flatten())
-        counts.pop(0, None)
-        top_codes = [c for c, _ in counts.most_common(50)]
+        codes = np.unique(crop_arr).astype(int)
+        codes = codes[codes != 0]
 
-        crop_table = {code: {"Value": default_val, "GrowingSeason": parse_months(default_months)} for code in top_codes}
-        val_map = np.zeros(max(top_codes) + 1)
-        for code in top_codes:
+        crop_table = {code: {"Value": default_val, "GrowingSeason": parse_months(default_months)} for code in codes}
+        val_map = np.zeros(max(codes) + 1)
+        for code in codes:
             val_map[code] = crop_table[code]["Value"]
 
         crop_ras = arcpy.Raster(crop_raster)
@@ -108,19 +106,19 @@ class AgFloodDamageEstimator(object):
                     )
             frac = interp_curve(depth_arr, damage_curve_pts)
 
-            for c in top_codes:
+            for c in codes:
                 season = crop_table[c].get("GrowingSeason", [])
                 if season and month not in season:
                     messages.addWarningMessage(
                         f"Event month {month} not in growing season for crop code {c}; assuming year-round."
                     )
-            grow_mask = np.isin(crop_arr, top_codes)
+            grow_mask = np.isin(crop_arr, codes)
             frac = np.where(grow_mask, frac, 0)
             val_arr = val_map[crop_arr]
             damage_arr = frac * val_arr * pixel_acres
 
             rows = []
-            for code in top_codes:
+            for code in codes:
                 mask = crop_arr == code
                 if not mask.any():
                     continue
