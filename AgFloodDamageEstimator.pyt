@@ -60,20 +60,27 @@ class AgFloodDamageEstimator(object):
                               parameterType="Required", direction="Output")
         val = arcpy.Parameter(displayName="Default Crop Value per Acre", name="value_acre", datatype="Double",
                               parameterType="Required", direction="Input")
+        val.value = 1200
         season = arcpy.Parameter(displayName="Default Growing Season (comma separated months; blank = year-round, mismatches warn)",
                                  name="season_months", datatype="String", parameterType="Optional", direction="Input")
+        season.value = "6"
         curve = arcpy.Parameter(displayName="Depth-Damage Curve (depth:fraction, comma separated)",
                                 name="curve", datatype="String", parameterType="Required", direction="Input")
+        curve.value = "0:1,1:1"
         event_info = arcpy.Parameter(displayName="Event Information", name="event_info", datatype="Value Table",
                                      parameterType="Required", direction="Input")
         event_info.columns = [["Raster Layer", "Raster"], ["GPLong", "Month"], ["GPLong", "Return Period"]]
+        event_info.value = [["", 6, 100]]
 
         stddev = arcpy.Parameter(displayName="Uncertainty Std. Dev. (fraction of loss)", name="uncertainty", datatype="Double",
                                  parameterType="Required", direction="Input")
+        stddev.value = 0.1
         mc = arcpy.Parameter(displayName="Monte Carlo Simulations", name="mc_runs", datatype="Long",
                              parameterType="Required", direction="Input")
+        mc.value = 10
         seed = arcpy.Parameter(displayName="Random Seed", name="random_seed", datatype="Long",
                                parameterType="Required", direction="Input")
+        seed.value = 10
         return [crop, out, val, season, curve, event_info, stddev, mc, seed]
 
     def execute(self, params, messages):
@@ -108,6 +115,11 @@ class AgFloodDamageEstimator(object):
         for row in event_table:
             depth_path, month, rp = row
             depth_str = depth_path.valueAsText if hasattr(depth_path, 'valueAsText') else str(depth_path)
+            if not depth_str:
+                continue
+            depth_desc = arcpy.Describe(depth_str)
+            if crop_ras.extent.disjoint(depth_desc.extent):
+                raise ValueError(f"Depth raster {depth_str} does not overlap crop raster extent")
             label = os.path.splitext(os.path.basename(depth_str))[0].replace(" ", "_")
             aligned = os.path.join(out_dir, f"{label}_aligned.tif")
             clipped = os.path.join(out_dir, f"{label}_clipped.tif")
@@ -123,12 +135,13 @@ class AgFloodDamageEstimator(object):
                 crop_ras.meanCellWidth,
             )
 
+            # Clip to crop raster template
+            arcpy.management.Clip(aligned, "#", clipped, crop_path, "0", "ClippingGeometry")
             # Clip using string extent from crop raster
             extent_str = (
                 f"{crop_ras.extent.XMin} {crop_ras.extent.YMin} {crop_ras.extent.XMax} {crop_ras.extent.YMax}"
             )
             arcpy.management.Clip(aligned, extent_str, clipped, crop_path, "0", "ClippingGeometry")
-
             depth_arr = arcpy.RasterToNumPyArray(clipped)
             if depth_arr.shape != crop_arr.shape:
                 raise ValueError(
@@ -163,6 +176,9 @@ class AgFloodDamageEstimator(object):
             avg_damage = float(sum(damages_run) / runs)
 
             results.append({"Label": label, "RP": float(rp), "Damage": avg_damage})
+
+        if not results:
+            raise ValueError("No valid events provided")
 
         # --- Trapezoidal EAD ---
         df_events = pd.DataFrame(results).sort_values("RP", ascending=False).reset_index(drop=True)
