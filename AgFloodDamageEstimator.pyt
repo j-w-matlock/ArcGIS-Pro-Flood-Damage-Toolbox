@@ -17,15 +17,19 @@ class AgFloodDamageEstimator(object):
 
     def getParameterInfo(self):
         crop = arcpy.Parameter("Cropland Raster", "crop_raster", "Raster Layer", "Required", "Input")
-        depths = arcpy.Parameter("Flood Depth Rasters", "depth_rasters", "Raster Layer", "Required", "Input")
-        depths.multiValue = True
         out_dir = arcpy.Parameter("Output Folder", "output_folder", "DEFolder", "Required", "Input")
 
         default_val = arcpy.Parameter("Default Crop Value per Acre", "default_crop_value", "GPDouble", "Optional", "Input")
         default_val.value = 1200
 
-        default_months = arcpy.Parameter("Default Growing Season (comma separated months; blank = year-round, mismatches warn)", "default_growing_season", "GPString", "Optional", "Input")
-        default_months.value = "6"
+        default_months = arcpy.Parameter(
+            "Default Growing Season (comma separated months; blank = year-round, mismatches warn)",
+            "default_growing_season",
+            "GPString",
+            "Optional",
+            "Input",
+        )
+        default_months.value = ""
 
         damage_curve = arcpy.Parameter("Depth-Damage Curve (depth:fraction, comma separated)", "damage_curve", "GPString", "Required", "Input")
         damage_curve.value = "0:0,1:1"
@@ -42,46 +46,73 @@ class AgFloodDamageEstimator(object):
         seed = arcpy.Parameter("Random Seed", "seed", "GPLong", "Optional", "Input")
         seed.value = 12
 
-        return [crop, depths, out_dir, default_val, default_months, damage_curve, event_info, mc_std, mc_sims, seed]
+        return [crop, out_dir, default_val, default_months, damage_curve, event_info, mc_std, mc_sims, seed]
 
     def execute(self, params, messages):
         crop_raster = params[0].valueAsText
-        depth_rasters = [str(p).strip("'\"") for p in params[1].values]
-        out_dir = params[2].valueAsText
-        default_val = float(params[3].value)
-        default_months = str(params[4].value)
-        curve_str = str(params[5].value)
-        event_info = params[6].values
-        mc_std = float(params[7].value)
-        mc_sims = int(params[8].value)
-        seed = params[9].value
+        out_dir = params[1].valueAsText
+        default_val = float(params[2].value)
+        default_months = str(params[3].value or "")
+        curve_str = str(params[4].value)
+        event_info = params[5].values
+        mc_std = float(params[6].value)
+        mc_sims = int(params[7].value)
+        seed = params[8].value
 
         if seed:
             np.random.seed(int(seed))
 
+        if mc_std < 0:
+            raise ValueError("Uncertainty Std. Dev. must be non-negative")
+        if mc_sims <= 0:
+            raise ValueError("Monte Carlo Simulations must be a positive integer")
+
+        os.makedirs(out_dir, exist_ok=True)
+        if not event_info:
+            raise ValueError("No event information provided")
+
         def parse_curve(curve_str):
-            pts = [s.split(":") for s in curve_str.split(",")]
+            pts = [s.split(":") for s in curve_str.split(",") if s]
             pts = sorted((float(d), float(f)) for d, f in pts)
-            return pts
+            if len(pts) < 2:
+                raise ValueError("Damage curve must contain at least two points")
+            xs = [d for d, _ in pts]
+            ys = [f for _, f in pts]
+            if any(x2 <= x1 for x1, x2 in zip(xs, xs[1:])):
+                raise ValueError("Depth values in damage curve must be strictly increasing")
+            if any(y < 0 or y > 1 for y in ys):
+                raise ValueError("Damage curve fractions must be between 0 and 1")
+            return list(zip(xs, ys))
 
         def interp_curve(depths, curve_pts):
             xs, ys = zip(*curve_pts)
             return np.interp(depths, xs, ys, left=0, right=1)
 
         def parse_months(s):
-            return [int(m.strip()) for m in s.split(",") if m.strip()]
+            months = [int(m.strip()) for m in s.split(",") if m.strip()]
+            for m in months:
+                if m < 1 or m > 12:
+                    raise ValueError(f"Invalid month {m}; months must be 1-12")
+            return months
 
         crop_arr = arcpy.RasterToNumPyArray(crop_raster)
         codes = np.unique(crop_arr).astype(int)
-        codes = codes[codes != 0]
+        codes = codes[codes > 0]
+        if codes.size == 0:
+            raise ValueError("Cropland raster contains no valid crop codes")
 
-        crop_table = {code: {"Value": default_val, "GrowingSeason": parse_months(default_months)} for code in codes}
-        val_map = np.zeros(max(codes) + 1)
+        crop_table = {
+            code: {"Value": default_val, "GrowingSeason": parse_months(default_months)}
+            for code in codes
+        }
+        val_map = np.zeros(int(codes.max()) + 1)
         for code in codes:
-            val_map[code] = crop_table[code]["Value"]
+            val_map[int(code)] = crop_table[code]["Value"]
 
         crop_ras = arcpy.Raster(crop_raster)
         pixel_acres = crop_ras.meanCellWidth * crop_ras.meanCellHeight / 4046.86
+        if pixel_acres <= 0:
+            raise ValueError("Crop raster has invalid cell size")
         ll = arcpy.Point(crop_ras.extent.XMin, crop_ras.extent.YMin)
         ncols, nrows = crop_ras.width, crop_ras.height
 
@@ -92,7 +123,11 @@ class AgFloodDamageEstimator(object):
             raster_path = row[0].valueAsText if hasattr(row[0], "valueAsText") else str(row[0])
             label = os.path.splitext(os.path.basename(raster_path))[0]
             month = int(row[1])
+            if month < 1 or month > 12:
+                raise ValueError(f"Invalid event month {month} for {label}")
             rp = float(row[2])
+            if rp <= 0:
+                raise ValueError(f"Return period must be positive for event {label}")
 
             depth_arr = arcpy.RasterToNumPyArray(
                 raster_path, ll, ncols, nrows, nodata_to_value=0
