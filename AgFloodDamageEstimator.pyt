@@ -332,9 +332,22 @@ class AgFloodDamageEstimator(object):
                     damages_runs[c].append(damaged[c])
 
             for c in crop_codes:
-                avg_damage = float(sum(damages_runs[c]) / runs)
+                arr = np.array(damages_runs[c], dtype=float)
+                avg_damage = float(arr.mean())
+                std_damage = float(arr.std(ddof=0))
+                p05 = float(np.percentile(arr, 5))
+                p95 = float(np.percentile(arr, 95))
                 name, _ = CROP_DEFINITIONS.get(c, ("Unknown", value_acre))
-                results.append({"Label": label, "RP": float(rp), "Crop": int(c), "LandCover": name, "Damage": avg_damage})
+                results.append({
+                    "Label": label,
+                    "RP": float(rp),
+                    "Crop": int(c),
+                    "LandCover": name,
+                    "Damage": avg_damage,
+                    "StdDev": std_damage,
+                    "P05": p05,
+                    "P95": p95,
+                })
 
         if not results:
             raise ValueError("No valid events provided")

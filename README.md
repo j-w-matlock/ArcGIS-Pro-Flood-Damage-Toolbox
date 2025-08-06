@@ -20,7 +20,9 @@ annualized using the U.S. Army Corps of Engineers trapezoidal expected
 annual damage method. A detailed Excel workbook with per-event damages,
 per-crop expected annual damages and illustrative charts is created for
 full transparency. The exported tables include both crop codes and
-human-readable land-cover names.
+human-readable land-cover names. Per-event damage exports now also
+include the standard deviation and 5th/95th percentile damages across
+the Monte Carlo simulations to convey uncertainty.
 
 The tool is designed to handle very large rasters efficiently while
 producing outputs that can withstand economic review.
