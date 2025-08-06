@@ -314,6 +314,7 @@ class AgFloodDamageEstimator(object):
             mask = (crop_arr > 0) & (depth_arr > 0)
             crop_codes = np.unique(crop_arr[mask]).astype(int)
             damages_runs = {c: [] for c in crop_codes}
+            pixel_counts = {c: int(((crop_arr == c) & mask).sum()) for c in crop_codes}
 
             for _ in range(runs):
                 damaged = {c: 0.0 for c in crop_codes}
@@ -347,6 +348,8 @@ class AgFloodDamageEstimator(object):
                     "StdDev": std_damage,
                     "P05": p05,
                     "P95": p95,
+                    "FloodedAcres": pixel_counts[c] * cell_area_acres,
+                    "FloodedPixels": pixel_counts[c],
                 })
 
         if not results:
