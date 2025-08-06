@@ -231,7 +231,9 @@ class AgFloodDamageEstimator(object):
         seed = arcpy.Parameter(displayName="Random Seed", name="random_seed", datatype="Long",
                                parameterType="Required", direction="Input")
         seed.value = 10
-        return [crop, out, val, season, curve, event_info, stddev, mc, seed]
+        pts = arcpy.Parameter(displayName="Output Damage Points", name="damage_points", datatype="DEFeatureClass",
+                               parameterType="Optional", direction="Output")
+        return [crop, out, val, season, curve, event_info, stddev, mc, seed, pts]
 
     def execute(self, params, messages):
         crop_path = params[0].valueAsText
@@ -243,6 +245,7 @@ class AgFloodDamageEstimator(object):
         stddev = float(params[6].value)
         runs = int(params[7].value)
         rand = Random(int(params[8].value))
+        out_points = params[9].valueAsText if params[9].value else None
 
         os.makedirs(out_dir, exist_ok=True)
 
@@ -260,6 +263,7 @@ class AgFloodDamageEstimator(object):
         season_months = parse_months(season_str)
 
         results = []
+        points = []
 
         for row in event_table:
             depth_path, month, rp = row
@@ -315,6 +319,7 @@ class AgFloodDamageEstimator(object):
             crop_codes = np.unique(crop_arr[mask]).astype(int)
             damages_runs = {c: [] for c in crop_codes}
             pixel_counts = {c: int(((crop_arr == c) & mask).sum()) for c in crop_codes}
+            damage_accum = np.zeros_like(depth_arr, dtype=float) if out_points else None
 
             for _ in range(runs):
                 damaged = {c: 0.0 for c in crop_codes}
@@ -328,9 +333,34 @@ class AgFloodDamageEstimator(object):
                                 f = min(max(f, 0), 1)
                             crop_code = int(crop_arr[i, j])
                             _, val = CROP_DEFINITIONS.get(crop_code, ("Unknown", value_acre))
-                            damaged[crop_code] += f * val * cell_area_acres
+                            dmg = f * val * cell_area_acres
+                            damaged[crop_code] += dmg
+                            if out_points:
+                                damage_accum[i, j] += dmg
                 for c in crop_codes:
                     damages_runs[c].append(damaged[c])
+
+            if out_points:
+                damage_avg = damage_accum / runs
+                xmin, ymin, xmax, ymax = inter
+                cw = crop_ras.meanCellWidth
+                ch = crop_ras.meanCellHeight
+                x0 = xmin + cw / 2
+                y0 = ymax - ch / 2
+                for i in range(depth_arr.shape[0]):
+                    for j in range(depth_arr.shape[1]):
+                        if mask[i, j]:
+                            crop_code = int(crop_arr[i, j])
+                            landcover = CROP_DEFINITIONS.get(crop_code, ("Unknown", value_acre))[0]
+                            points.append((
+                                x0 + j * cw,
+                                y0 - i * ch,
+                                crop_code,
+                                landcover,
+                                float(damage_avg[i, j]),
+                                label,
+                                float(rp),
+                            ))
 
             for c in crop_codes:
                 arr = np.array(damages_runs[c], dtype=float)
@@ -420,3 +450,17 @@ class AgFloodDamageEstimator(object):
             chart2.add_data(data_ref2, titles_from_data=True)
             chart2.set_categories(cats_ref2)
             worksheet_ead.add_chart(chart2, "D2")
+
+        if out_points:
+            if arcpy.Exists(out_points):
+                arcpy.management.Delete(out_points)
+            arcpy.management.CreateFeatureclass(os.path.dirname(out_points), os.path.basename(out_points), "POINT",
+                                               spatial_reference=crop_ras.spatialReference)
+            arcpy.management.AddField(out_points, "Crop", "LONG")
+            arcpy.management.AddField(out_points, "LandCover", "TEXT", field_length=50)
+            arcpy.management.AddField(out_points, "Damage", "DOUBLE")
+            arcpy.management.AddField(out_points, "Event", "TEXT", field_length=50)
+            arcpy.management.AddField(out_points, "RP", "DOUBLE")
+            with arcpy.da.InsertCursor(out_points, ["SHAPE@XY", "Crop", "LandCover", "Damage", "Event", "RP"]) as cursor:
+                for x, y, c, lc, dmg, lbl, rp_val in points:
+                    cursor.insertRow([(x, y), c, lc, dmg, lbl, rp_val])
