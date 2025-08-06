@@ -7,6 +7,144 @@ from openpyxl.chart import BarChart, Reference
 from random import Random
 
 
+# Crop code definitions with default value per acre
+CROP_DEFINITIONS = {
+    1: ("Corn", 1200),
+    2: ("Cotton", 1200),
+    3: ("Rice", 1200),
+    4: ("Sorghum", 1200),
+    5: ("Soybeans", 1200),
+    6: ("Sunflower", 1200),
+    10: ("Peanuts", 1200),
+    11: ("Tobacco", 1200),
+    12: ("Sweet Corn", 1200),
+    13: ("Pop or Orn Corn", 1200),
+    14: ("Mint", 1200),
+    21: ("Barley", 1200),
+    22: ("Durum Wheat", 1200),
+    23: ("Spring Wheat", 1200),
+    24: ("Winter Wheat", 1200),
+    25: ("Other Small Grains", 1200),
+    26: ("Dbl Crop WinWht/Soybeans", 1200),
+    27: ("Rye", 1200),
+    28: ("Oats", 1200),
+    29: ("Millet", 1200),
+    30: ("Speltz", 1200),
+    31: ("Canola", 1200),
+    32: ("Flaxseed", 1200),
+    33: ("Safflower", 1200),
+    34: ("Rape Seed", 1200),
+    35: ("Mustard", 1200),
+    36: ("Alfalfa", 1200),
+    37: ("Other Hay/Non Alfalfa", 1200),
+    38: ("Camelina", 1200),
+    39: ("Buckwheat", 1200),
+    41: ("Sugarbeets", 1200),
+    42: ("Dry Beans", 1200),
+    43: ("Potatoes", 1200),
+    44: ("Other Crops", 1200),
+    45: ("Sugarcane", 1200),
+    46: ("Sweet Potatoes", 1200),
+    47: ("Misc Vegs & Fruits", 1200),
+    48: ("Watermelons", 1200),
+    49: ("Onions", 1200),
+    50: ("Cucumbers", 1200),
+    51: ("Chick Peas", 1200),
+    52: ("Lentils", 1200),
+    53: ("Peas", 1200),
+    54: ("Tomatoes", 1200),
+    55: ("Caneberries", 1200),
+    56: ("Hops", 1200),
+    57: ("Herbs", 1200),
+    58: ("Clover/Wildflowers", 1200),
+    59: ("Sod/Grass Seed", 1200),
+    60: ("Switchgrass", 1200),
+    61: ("Fallow/Idle Cropland", 0),
+    62: ("Pasture/Grass", 1200),
+    63: ("Forest", 0),
+    64: ("Shrubland", 0),
+    65: ("Barren", 0),
+    66: ("Cherries", 1200),
+    67: ("Peaches", 1200),
+    68: ("Apples", 1200),
+    69: ("Grapes", 1200),
+    70: ("Christmas Trees", 1200),
+    71: ("Other Tree Crops", 1200),
+    72: ("Citrus", 1200),
+    74: ("Pecans", 1200),
+    75: ("Almonds", 1200),
+    76: ("Walnuts", 1200),
+    77: ("Pears", 1200),
+    81: ("Clouds/No Data", 0),
+    82: ("Developed", 0),
+    83: ("Water", 0),
+    87: ("Wetlands", 0),
+    88: ("Nonag/Undefined", 0),
+    92: ("Aquaculture", 1200),
+    111: ("Open Water", 0),
+    112: ("Perennial Ice/Snow", 0),
+    121: ("Developed/Open Space", 0),
+    122: ("Developed/Low Intensity", 0),
+    123: ("Developed/Med Intensity", 0),
+    124: ("Developed/High Intensity", 0),
+    131: ("Barren", 0),
+    141: ("Deciduous Forest", 0),
+    142: ("Evergreen Forest", 0),
+    143: ("Mixed Forest", 0),
+    152: ("Shrubland", 0),
+    176: ("Grassland/Pasture", 0),
+    190: ("Woody Wetlands", 0),
+    195: ("Herbaceous Wetlands", 0),
+    204: ("Pistachios", 1200),
+    205: ("Triticale", 1200),
+    206: ("Carrots", 1200),
+    207: ("Asparagus", 1200),
+    208: ("Garlic", 1200),
+    209: ("Cantaloupes", 1200),
+    210: ("Prunes", 1200),
+    211: ("Olives", 1200),
+    212: ("Oranges", 1200),
+    213: ("Honeydew Melons", 1200),
+    214: ("Broccoli", 1200),
+    215: ("Avocados", 1200),
+    216: ("Peppers", 1200),
+    217: ("Pomegranates", 1200),
+    218: ("Nectarines", 1200),
+    219: ("Greens", 1200),
+    220: ("Plums", 1200),
+    221: ("Strawberries", 1200),
+    222: ("Squash", 1200),
+    223: ("Apricots", 1200),
+    224: ("Vetch", 1200),
+    225: ("Dbl Crop WinWht/Corn", 1200),
+    226: ("Dbl Crop Oats/Corn", 1200),
+    227: ("Lettuce", 1200),
+    228: ("Dbl Crop Triticale/Corn", 1200),
+    229: ("Pumpkins", 1200),
+    230: ("Dbl Crop Lettuce/Durum Wht", 1200),
+    231: ("Dbl Crop Lettuce/Cantaloupe", 1200),
+    232: ("Dbl Crop Lettuce/Cotton", 1200),
+    233: ("Dbl Crop Lettuce/Barley", 1200),
+    234: ("Dbl Crop Durum Wht/Sorghum", 1200),
+    235: ("Dbl Crop Barley/Sorghum", 1200),
+    236: ("Dbl Crop WinWht/Sorghum", 1200),
+    237: ("Dbl Crop Barley/Corn", 1200),
+    238: ("Dbl Crop WinWht/Cotton", 1200),
+    239: ("Dbl Crop Soybeans/Cotton", 1200),
+    240: ("Dbl Crop Soybeans/Oats", 1200),
+    241: ("Dbl Crop Corn/Soybeans", 1200),
+    242: ("Blueberries", 1200),
+    243: ("Cabbage", 1200),
+    244: ("Cauliflower", 1200),
+    245: ("Celery", 1200),
+    246: ("Radishes", 1200),
+    247: ("Turnips", 1200),
+    248: ("Eggplants", 1200),
+    249: ("Gourds", 1200),
+    250: ("Cranberries", 1200),
+    254: ("Dbl Crop Barley/Soybeans", 1200),
+}
+
 def parse_months(month_str):
     """Return a set of valid month numbers (1-12) from a comma string."""
     if not month_str:
@@ -188,13 +326,15 @@ class AgFloodDamageEstimator(object):
                                 f += rand.gauss(0, stddev)
                                 f = min(max(f, 0), 1)
                             crop_code = int(crop_arr[i, j])
-                            damaged[crop_code] += f * value_acre * cell_area_acres
+                            _, val = CROP_DEFINITIONS.get(crop_code, ("Unknown", value_acre))
+                            damaged[crop_code] += f * val * cell_area_acres
                 for c in crop_codes:
                     damages_runs[c].append(damaged[c])
 
             for c in crop_codes:
                 avg_damage = float(sum(damages_runs[c]) / runs)
-                results.append({"Label": label, "RP": float(rp), "Crop": int(c), "Damage": avg_damage})
+                name, _ = CROP_DEFINITIONS.get(c, ("Unknown", value_acre))
+                results.append({"Label": label, "RP": float(rp), "Crop": int(c), "LandCover": name, "Damage": avg_damage})
 
         if not results:
             raise ValueError("No valid events provided")
@@ -215,7 +355,7 @@ class AgFloodDamageEstimator(object):
         ead_total = calc_ead(df_total)
 
         # EAD per crop
-        eads_crop = {int(c): calc_ead(g) for c, g in df_events.groupby("Crop")}
+        eads_crop = {name: calc_ead(g) for name, g in df_events.groupby("LandCover")}
 
         # Write CSV for overall EAD
         with open(os.path.join(out_dir, "ead.csv"), "w") as f:
@@ -229,11 +369,11 @@ class AgFloodDamageEstimator(object):
             df_events.to_excel(writer, sheet_name="EventDamages", index=False)
 
             # Pivot table for charting
-            pivot = df_events.pivot_table(index="Label", columns="Crop", values="Damage", fill_value=0)
+            pivot = df_events.pivot_table(index="Label", columns="LandCover", values="Damage", fill_value=0)
             pivot.to_excel(writer, sheet_name="EventPivot")
 
             # EAD per crop table
-            df_ead = pd.DataFrame([{"Crop": k, "EAD": v} for k, v in eads_crop.items()])
+            df_ead = pd.DataFrame([{"LandCover": k, "EAD": v} for k, v in eads_crop.items()])
             df_ead.to_excel(writer, sheet_name="EAD", index=False)
 
             # Chart for event damages
@@ -245,7 +385,7 @@ class AgFloodDamageEstimator(object):
             chart1 = BarChart()
             chart1.type = "col"
             chart1.grouping = "stacked"
-            chart1.title = "Damage by Event and Crop"
+            chart1.title = "Damage by Event and Land Cover"
             chart1.x_axis.title = "Event"
             chart1.y_axis.title = "Damage"
             chart1.add_data(data_ref, titles_from_data=True)
@@ -258,8 +398,8 @@ class AgFloodDamageEstimator(object):
             cats_ref2 = Reference(worksheet_ead, min_col=1, min_row=2, max_row=len(df_ead) + 1)
             chart2 = BarChart()
             chart2.type = "col"
-            chart2.title = "Expected Annual Damage by Crop"
-            chart2.x_axis.title = "Crop"
+            chart2.title = "Expected Annual Damage by Land Cover"
+            chart2.x_axis.title = "Land Cover"
             chart2.y_axis.title = "EAD"
             chart2.add_data(data_ref2, titles_from_data=True)
             chart2.set_categories(cats_ref2)
