@@ -267,7 +267,13 @@ class AgFloodDamageEstimator(object):
 
         for row in event_table:
             depth_path, month, rp = row
-            depth_str = depth_path.valueAsText if hasattr(depth_path, 'valueAsText') else str(depth_path)
+            depth_str = (
+                depth_path.valueAsText
+                if hasattr(depth_path, "valueAsText")
+                else depth_path.dataSource
+                if hasattr(depth_path, "dataSource")
+                else str(depth_path)
+            )
             if not depth_str:
                 continue
             depth_desc = arcpy.Describe(depth_str)
