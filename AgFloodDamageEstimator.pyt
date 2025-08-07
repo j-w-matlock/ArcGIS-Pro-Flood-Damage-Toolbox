@@ -281,7 +281,17 @@ class AgFloodDamageEstimator(object):
             depth_desc = arcpy.Describe(depth_str)
             if crop_ras.extent.disjoint(depth_desc.extent):
                 raise ValueError(f"Depth raster {depth_str} does not overlap crop raster extent")
-            label = os.path.splitext(os.path.basename(depth_str))[0].replace(" ", "_")
+            # Sanitize the label derived from the depth raster so it can be used
+            # safely as part of an in-memory dataset name.  The in-memory
+            # workspace does not allow dataset names with extensions, and any
+            # periods in the base filename are interpreted as extensions.  This
+            # replaces spaces and periods with underscores to ensure a valid
+            # name such as "event_1_crop".
+            label = (
+                os.path.splitext(os.path.basename(depth_str))[0]
+                .replace(" ", "_")
+                .replace(".", "_")
+            )
             aligned = os.path.join(out_dir, f"{label}_aligned.tif")
             clipped = os.path.join(out_dir, f"{label}_clipped.tif")
 
