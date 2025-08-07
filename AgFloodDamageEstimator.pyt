@@ -250,6 +250,8 @@ class AgFloodDamageEstimator(object):
         os.makedirs(out_dir, exist_ok=True)
 
         damage_curve_pts = parse_curve(curve_str)
+        curve_depths = np.array([d for d, _ in damage_curve_pts], dtype=float)
+        curve_fracs = np.array([f for _, f in damage_curve_pts], dtype=float)
         crop_ras = arcpy.Raster(crop_path)
 
         # Cell area in acres
@@ -322,29 +324,46 @@ class AgFloodDamageEstimator(object):
                 )
 
             mask = (crop_arr > 0) & (depth_arr > 0)
-            crop_codes = np.unique(crop_arr[mask]).astype(int)
+            crop_masked = crop_arr[mask].astype(int)
+            depth_masked = depth_arr[mask]
+            crop_codes = np.unique(crop_masked)
+
+            if crop_codes.size == 0:
+                continue
+
+            max_code = int(crop_codes.max())
+            val_lookup = np.full(max_code + 1, value_acre, dtype=float)
+            for code, (_, val) in CROP_DEFINITIONS.items():
+                if code <= max_code:
+                    val_lookup[code] = val
+
+            pixel_counts_arr = np.bincount(crop_masked, minlength=max_code + 1)
+            pixel_counts = {c: int(pixel_counts_arr[c]) for c in crop_codes}
+
+            base_frac = np.interp(
+                depth_masked, curve_depths, curve_fracs, left=curve_fracs[0], right=curve_fracs[-1]
+            )
+
             damages_runs = {c: [] for c in crop_codes}
-            pixel_counts = {c: int(((crop_arr == c) & mask).sum()) for c in crop_codes}
             damage_accum = np.zeros_like(depth_arr, dtype=float) if out_points else None
 
             for _ in range(runs):
-                damaged = {c: 0.0 for c in crop_codes}
-                for i in range(depth_arr.shape[0]):
-                    for j in range(depth_arr.shape[1]):
-                        if mask[i, j]:
-                            d = depth_arr[i, j]
-                            f = interp_damage(d, damage_curve_pts)
-                            if stddev > 0:
-                                f += rand.gauss(0, stddev)
-                                f = min(max(f, 0), 1)
-                            crop_code = int(crop_arr[i, j])
-                            _, val = CROP_DEFINITIONS.get(crop_code, ("Unknown", value_acre))
-                            dmg = f * val * cell_area_acres
-                            damaged[crop_code] += dmg
-                            if out_points:
-                                damage_accum[i, j] += dmg
+                if stddev > 0:
+                    rng = np.random.default_rng(rand.randint(0, 2**32 - 1))
+                    frac = base_frac + rng.normal(0, stddev, size=base_frac.shape)
+                    frac = np.clip(frac, 0, 1)
+                else:
+                    frac = base_frac
+
+                dmg_vals = frac * val_lookup[crop_masked] * cell_area_acres
+                dmg_per_crop = np.bincount(
+                    crop_masked, weights=dmg_vals, minlength=max_code + 1
+                )
                 for c in crop_codes:
-                    damages_runs[c].append(damaged[c])
+                    damages_runs[c].append(float(dmg_per_crop[c]))
+
+                if out_points:
+                    damage_accum[mask] += dmg_vals
 
             if out_points:
                 damage_avg = damage_accum / runs
