@@ -1,0 +1,99 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<metadata xml:lang="en">
+  <Esri>
+    <CreaDate>20240616</CreaDate>
+    <CreaTime>000000</CreaTime>
+    <ArcGISFormat>1.0</ArcGISFormat>
+  </Esri>
+  <tool>
+    <name>AgFloodDamageEstimator</name>
+    <displayname>Estimate Agricultural Flood Damage</displayname>
+    <description>Estimate flood damage to crops using depth rasters and a cropland classification raster.</description>
+    <parameters>
+      <param name="crop_raster">
+        <displayname>Cropland Raster</displayname>
+        <direction>Input</direction>
+        <datatype>Raster Layer</datatype>
+        <tooltip>Raster of cropland classification codes (e.g., "C:\\data\\crops.tif"). Changing the raster changes the crop types analyzed and the per-acre values used in calculations.</tooltip>
+      </param>
+      <param name="output_folder">
+        <displayname>Output Folder</displayname>
+        <direction>Output</direction>
+        <datatype>DEFolder</datatype>
+        <tooltip>Folder where result tables, summaries, and optional damage points are written (e.g., "C:\\projects\\flood_damage\\outputs"). Location only affects where outputs are stored.</tooltip>
+      </param>
+      <param name="value_acre">
+        <displayname>Default Crop Value per Acre</displayname>
+        <direction>Input</direction>
+        <datatype>Double</datatype>
+        <tooltip>Dollar value applied per acre for crops without a predefined value (e.g., 1200). Raising or lowering this value increases or decreases damage estimates for unknown crops.</tooltip>
+      </param>
+      <param name="season_months">
+        <displayname>Default Growing Season (comma separated months; blank = year-round, mismatches warn)</displayname>
+        <direction>Input</direction>
+        <datatype>String</datatype>
+        <tooltip>Comma separated list of growing season months such as "4,5,6". Floods outside these months produce no damage, so editing the list changes which events contribute to losses.</tooltip>
+      </param>
+      <param name="curve">
+        <displayname>Depth-Damage Curve (depth:fraction, comma separated)</displayname>
+        <direction>Input</direction>
+        <datatype>String</datatype>
+        <tooltip>Pairs of flood depth and damage fraction, e.g., "0:0,1:0.5,2:1". Editing the points changes how quickly losses climb with depth, directly affecting damage totals.</tooltip>
+      </param>
+      <param name="event_info">
+        <displayname>Event Information</displayname>
+        <direction>Input</direction>
+        <datatype>Value Table</datatype>
+        <tooltip>Table of flood events with depth rasters, flood month, and return period. Example row: "C:\\data\\100yr.tif", 6, 100. Modifying rows changes scenarios and their frequency, influencing expected damage.</tooltip>
+      </param>
+      <param name="uncertainty">
+        <displayname>Damage Fraction Std. Dev.</displayname>
+        <direction>Input</direction>
+        <datatype>Double</datatype>
+        <tooltip>Standard deviation applied to damage fractions during Monte Carlo simulations (e.g., 0.1). Higher values introduce more variability and uncertainty in results.</tooltip>
+      </param>
+      <param name="mc_runs">
+        <displayname>Monte Carlo Simulations</displayname>
+        <direction>Input</direction>
+        <datatype>Long</datatype>
+        <tooltip>Number of Monte Carlo iterations for each event per year (e.g., 100). Increasing the count stabilizes averages but lengthens processing time.</tooltip>
+      </param>
+      <param name="random_seed">
+        <displayname>Random Seed</displayname>
+        <direction>Input</direction>
+        <datatype>Long</datatype>
+        <tooltip>Seed for the random number generator (e.g., 42) to ensure reproducible simulations. Changing it yields different random sequences and damage outcomes.</tooltip>
+      </param>
+      <param name="random_month">
+        <displayname>Randomize Flood Month</displayname>
+        <direction>Input</direction>
+        <datatype>Boolean</datatype>
+        <tooltip>If True, randomly selects the flood month instead of using the provided month. Randomizing months can move events into or out of the growing season, altering damages.</tooltip>
+      </param>
+      <param name="depth_stddev">
+        <displayname>Flood Depth Std. Dev.</displayname>
+        <direction>Input</direction>
+        <datatype>Double</datatype>
+        <tooltip>Standard deviation for adding normally distributed noise to flood depths (e.g., 0.25). Larger values produce greater depth variation, affecting interpolated damage fractions.</tooltip>
+      </param>
+      <param name="value_stddev">
+        <displayname>Crop Value Std. Dev.</displayname>
+        <direction>Input</direction>
+        <datatype>Double</datatype>
+        <tooltip>Standard deviation for crop values per acre (e.g., 150). Increasing the deviation widens the range of possible crop values, changing overall damage estimates.</tooltip>
+      </param>
+      <param name="analysis_years">
+        <displayname>Analysis Period (years)</displayname>
+        <direction>Input</direction>
+        <datatype>Long</datatype>
+        <tooltip>Number of years to simulate for each event (e.g., 30). Extending the period scales damages across more years of exposure.</tooltip>
+      </param>
+      <param name="damage_points">
+        <displayname>Output Damage Points</displayname>
+        <direction>Output</direction>
+        <datatype>DEFeatureClass</datatype>
+        <tooltip>Optional feature class storing per-pixel average damage for visualization, such as a shapefile or geodatabase path. Creating this output enables spatial analysis but increases processing time; leaving it blank skips this step.</tooltip>
+      </param>
+    </parameters>
+  </tool>
+</metadata>
