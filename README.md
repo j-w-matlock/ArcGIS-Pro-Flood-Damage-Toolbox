@@ -12,6 +12,13 @@ specified season are treated as year-round. When an event month falls
 outside a crop's listed growing season, the tool assumes year-round
 susceptibility and emits a warning.
 
+The *Specific Crop Depth Damage Curve* parameter allows custom
+depth-damage relationships for particular crop codes. Provide the crop
+code on one line and its depth-damage curve on the following line (for
+example: `42` on one line and `0:0,1:0.5,2:1` on the next). Listed codes
+override the default *Depth-Damage Curve* while other crops continue to
+use the default relationship.
+
 For each flood depth raster the toolbox produces a two–band raster
 containing crop type and damage fraction, a CSV summary table and
 performs a Monte Carlo analysis with user-defined uncertainty and number
