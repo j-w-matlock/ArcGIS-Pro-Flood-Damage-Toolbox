@@ -238,6 +238,19 @@ class AgFloodDamageEstimator(object):
             "Pairs of flood depth and damage fraction (e.g., '0:0,1:0.5,2:1'). "
             "Editing these points changes how quickly losses climb with depth, directly affecting damage totals."
         )
+        specific_curve = arcpy.Parameter(
+            displayName="Specific Crop Depth Damage Curve",
+            name="specific_curves",
+            datatype="Value Table",
+            parameterType="Optional",
+            direction="Input",
+        )
+        specific_curve.columns = [["GPLong", "Crop Code"], ["GPString", "Depth-Damage Curve"]]
+        specific_curve.description = (
+            "Optional crop-specific depth-damage curves. "
+            "Provide a crop code on one line and its depth-damage curve on the line below, "
+            "formatted like '0:0,1:0.5,2:1'. Listed codes override the default curve."
+        )
         event_info = arcpy.Parameter(displayName="Event Information", name="event_info", datatype="Value Table",
                                      parameterType="Required", direction="Input")
         event_info.columns = [["Raster Layer", "Raster"], ["GPLong", "Month (1-12)"], ["GPLong", "Return Period (years)"]]
@@ -356,6 +369,7 @@ class AgFloodDamageEstimator(object):
             val,
             season,
             curve,
+            specific_curve,
             event_info,
             stddev,
             mc,
@@ -373,21 +387,31 @@ class AgFloodDamageEstimator(object):
         value_acre = float(params[2].value)
         season_str = params[3].value
         curve_str = params[4].value
-        event_table = params[5].values
-        frac_std = float(params[6].value)
-        runs = int(params[7].value)
-        rand = Random(int(params[8].value))
-        random_month = bool(params[9].value) if params[9].value is not None else False
-        depth_std = float(params[10].value) if params[10].value is not None else 0.0
-        value_std = float(params[11].value) if params[11].value is not None else 0.0
-        analysis_years = int(params[12].value) if params[12].value is not None else 1
-        out_points = params[13].valueAsText if params[13].value else None
+        specific_table = params[5].values if params[5].values else []
+        event_table = params[6].values
+        frac_std = float(params[7].value)
+        runs = int(params[8].value)
+        rand = Random(int(params[9].value))
+        random_month = bool(params[10].value) if params[10].value is not None else False
+        depth_std = float(params[11].value) if params[11].value is not None else 0.0
+        value_std = float(params[12].value) if params[12].value is not None else 0.0
+        analysis_years = int(params[13].value) if params[13].value is not None else 1
+        out_points = params[14].valueAsText if params[14].value else None
 
         os.makedirs(out_dir, exist_ok=True)
 
         damage_curve_pts = parse_curve(curve_str)
         curve_depths = np.array([d for d, _ in damage_curve_pts], dtype=float)
         curve_fracs = np.array([f for _, f in damage_curve_pts], dtype=float)
+        specific_curves = {}
+        for row in specific_table:
+            code, curve_txt = row
+            if curve_txt:
+                pts = parse_curve(curve_txt)
+                specific_curves[int(code)] = (
+                    np.array([d for d, _ in pts], dtype=float),
+                    np.array([f for _, f in pts], dtype=float),
+                )
         crop_ras = arcpy.Raster(crop_path)
 
         # Cell area in acres
@@ -468,6 +492,12 @@ class AgFloodDamageEstimator(object):
             if crop_codes.size == 0:
                 continue
 
+            spec_masks = {}
+            for code, _ in specific_curves.items():
+                m = crop_masked == code
+                if np.any(m):
+                    spec_masks[code] = m
+
             max_code = int(crop_codes.max())
             val_lookup = np.full(max_code + 1, value_acre, dtype=float)
             for code, (_, val) in CROP_DEFINITIONS.items():
@@ -504,6 +534,15 @@ class AgFloodDamageEstimator(object):
                     left=curve_fracs[0],
                     right=curve_fracs[-1],
                 )
+                for code, m in spec_masks.items():
+                    d_arr, f_arr = specific_curves[code]
+                    frac[m] = np.interp(
+                        depth_sim[m],
+                        d_arr,
+                        f_arr,
+                        left=f_arr[0],
+                        right=f_arr[-1],
+                    )
                 if frac_std > 0:
                     frac = frac + rng.normal(0, frac_std, size=frac.shape)
                     frac = np.clip(frac, 0, 1)
