@@ -211,14 +211,14 @@ class AgFloodDamageEstimator(object):
             "Switching rasters changes which crop types are analyzed and therefore"
             " which per-acre values feed into the damage model."
         )
-        crop.tooltip = crop.description
+        crop.help = crop.description
         out = arcpy.Parameter(displayName="Output Folder", name="output_folder", datatype="DEFolder",
                               parameterType="Required", direction="Output")
         out.description = (
             "Folder where result tables, Excel summaries, and optional damage points will be written. "
             "Location only affects where outputs are stored, not the damage calculations themselves."
         )
-        out.tooltip = out.description
+        out.help = out.description
         val = arcpy.Parameter(displayName="Default Crop Value per Acre", name="value_acre", datatype="Double",
                               parameterType="Required", direction="Input")
         val.value = 1200
@@ -226,7 +226,7 @@ class AgFloodDamageEstimator(object):
             "Dollar value applied per acre for crops not found in the predefined list. "
             "Raising this value increases damage estimates for unknown crops, while lowering it reduces them."
         )
-        val.tooltip = val.description
+        val.help = val.description
         season = arcpy.Parameter(displayName="Default Growing Season (comma separated months; blank = year-round, mismatches warn)",
                                  name="season_months", datatype="String", parameterType="Optional", direction="Input")
         season.value = "6"
@@ -234,7 +234,7 @@ class AgFloodDamageEstimator(object):
             "Comma separated list of growing season months (1-12). "
             "Floods occurring outside the listed months contribute no damage, so changing the list alters which events are counted."
         )
-        season.tooltip = season.description
+        season.help = season.description
         curve = arcpy.Parameter(displayName="Depth-Damage Curve (depth:fraction, comma separated)",
                                 name="curve", datatype="String", parameterType="Required", direction="Input")
         curve.value = "0:1,1:1"
@@ -242,7 +242,7 @@ class AgFloodDamageEstimator(object):
             "Pairs of flood depth and damage fraction (e.g., '0:0,1:0.5,2:1'). "
             "Editing these points changes how quickly losses climb with depth, directly affecting damage totals."
         )
-        curve.tooltip = curve.description
+        curve.help = curve.description
         event_info = arcpy.Parameter(displayName="Event Information", name="event_info", datatype="Value Table",
                                      parameterType="Required", direction="Input")
         event_info.columns = [["Raster Layer", "Raster"], ["GPLong", "Month"], ["GPLong", "Return Period"]]
@@ -251,7 +251,7 @@ class AgFloodDamageEstimator(object):
             "Table of flood events with depth rasters, flood month, and return period. "
             "Adding or modifying rows changes which scenarios are modeled and their frequency, influencing total expected damage."
         )
-        event_info.tooltip = event_info.description
+        event_info.help = event_info.description
 
         stddev = arcpy.Parameter(
             displayName="Damage Fraction Std. Dev.",
@@ -265,7 +265,7 @@ class AgFloodDamageEstimator(object):
             "Standard deviation applied to the damage fractions during Monte Carlo simulations. "
             "Higher values introduce more variability in outcomes, modeling greater uncertainty in the curve."
         )
-        stddev.tooltip = stddev.description
+        stddev.help = stddev.description
 
         mc = arcpy.Parameter(
             displayName="Monte Carlo Simulations",
@@ -279,7 +279,7 @@ class AgFloodDamageEstimator(object):
             "Number of Monte Carlo iterations for each event per year. "
             "Increasing the count stabilizes averages but lengthens processing time."
         )
-        mc.tooltip = mc.description
+        mc.help = mc.description
 
         seed = arcpy.Parameter(
             displayName="Random Seed",
@@ -293,7 +293,7 @@ class AgFloodDamageEstimator(object):
             "Seed value for the random number generator to ensure reproducible simulations. "
             "Changing it yields different random sequences and hence different simulated damages."
         )
-        seed.tooltip = seed.description
+        seed.help = seed.description
 
         rand_month = arcpy.Parameter(
             displayName="Randomize Flood Month",
@@ -307,7 +307,7 @@ class AgFloodDamageEstimator(object):
             "If checked, randomly selects the flood month in simulations instead of using the month provided for each event. "
             "Randomizing months can move events into or out of the growing season, altering damage totals."
         )
-        rand_month.tooltip = rand_month.description
+        rand_month.help = rand_month.description
 
         depth_sd = arcpy.Parameter(
             displayName="Flood Depth Std. Dev.",
@@ -321,7 +321,7 @@ class AgFloodDamageEstimator(object):
             "Standard deviation for adding normally distributed noise to flood depths. "
             "Higher values produce greater depth variation, which affects interpolated damage fractions."
         )
-        depth_sd.tooltip = depth_sd.description
+        depth_sd.help = depth_sd.description
 
         value_sd = arcpy.Parameter(
             displayName="Crop Value Std. Dev.",
@@ -335,7 +335,7 @@ class AgFloodDamageEstimator(object):
             "Standard deviation for crop values per acre. "
             "Increasing the deviation widens the range of possible crop values, changing overall damage estimates."
         )
-        value_sd.tooltip = value_sd.description
+        value_sd.help = value_sd.description
 
         analysis = arcpy.Parameter(
             displayName="Analysis Period (years)",
@@ -349,7 +349,7 @@ class AgFloodDamageEstimator(object):
             "Number of years to simulate for each event. "
             "Extending the period scales damages across more years of exposure."
         )
-        analysis.tooltip = analysis.description
+        analysis.help = analysis.description
 
         pts = arcpy.Parameter(
             displayName="Output Damage Points",
@@ -362,7 +362,7 @@ class AgFloodDamageEstimator(object):
             "Optional feature class storing per-pixel average damage for visualization. "
             "Creating this output enables spatial analysis but increases processing time; leaving it blank skips this step."
         )
-        pts.tooltip = pts.description
+        pts.help = pts.description
 
         return [
             crop,
