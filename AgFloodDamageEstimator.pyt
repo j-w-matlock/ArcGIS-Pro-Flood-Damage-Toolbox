@@ -217,7 +217,7 @@ class AgFloodDamageEstimator(object):
             "Folder where result tables, Excel summaries, and optional damage points will be written. "
             "Location only affects where outputs are stored, not the damage calculations themselves."
         )
-        val = arcpy.Parameter(displayName="Default Crop Value per Acre", name="value_acre", datatype="Double",
+        val = arcpy.Parameter(displayName="Default Crop Value per Acre (USD/acre)", name="value_acre", datatype="Double",
                               parameterType="Required", direction="Input")
         val.value = 1200
         val.description = (
@@ -231,7 +231,7 @@ class AgFloodDamageEstimator(object):
             "Comma separated list of growing season months (1-12). "
             "Floods occurring outside the listed months contribute no damage, so changing the list alters which events are counted."
         )
-        curve = arcpy.Parameter(displayName="Depth-Damage Curve (depth:fraction, comma separated)",
+        curve = arcpy.Parameter(displayName="Depth-Damage Curve (depth in ft:fraction, comma separated)",
                                 name="curve", datatype="String", parameterType="Required", direction="Input")
         curve.value = "0:1,1:1"
         curve.description = (
@@ -240,7 +240,7 @@ class AgFloodDamageEstimator(object):
         )
         event_info = arcpy.Parameter(displayName="Event Information", name="event_info", datatype="Value Table",
                                      parameterType="Required", direction="Input")
-        event_info.columns = [["Raster Layer", "Raster"], ["GPLong", "Month"], ["GPLong", "Return Period"]]
+        event_info.columns = [["Raster Layer", "Raster"], ["GPLong", "Month (1-12)"], ["GPLong", "Return Period (years)"]]
         event_info.value = [["", 6, 100]]
         event_info.description = (
             "Table of flood events with depth rasters, flood month, and return period. "
@@ -248,7 +248,7 @@ class AgFloodDamageEstimator(object):
         )
 
         stddev = arcpy.Parameter(
-            displayName="Damage Fraction Std. Dev.",
+            displayName="Damage Fraction Std. Dev. (0-1)",
             name="uncertainty",
             datatype="Double",
             parameterType="Required",
@@ -261,7 +261,7 @@ class AgFloodDamageEstimator(object):
         )
 
         mc = arcpy.Parameter(
-            displayName="Monte Carlo Simulations",
+            displayName="Monte Carlo Simulations (count)",
             name="mc_runs",
             datatype="Long",
             parameterType="Required",
@@ -300,7 +300,7 @@ class AgFloodDamageEstimator(object):
         )
 
         depth_sd = arcpy.Parameter(
-            displayName="Flood Depth Std. Dev.",
+            displayName="Flood Depth Std. Dev. (ft)",
             name="depth_stddev",
             datatype="Double",
             parameterType="Optional",
@@ -313,7 +313,7 @@ class AgFloodDamageEstimator(object):
         )
 
         value_sd = arcpy.Parameter(
-            displayName="Crop Value Std. Dev.",
+            displayName="Crop Value Std. Dev. (USD/acre)",
             name="value_stddev",
             datatype="Double",
             parameterType="Optional",
