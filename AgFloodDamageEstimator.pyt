@@ -208,33 +208,35 @@ class AgFloodDamageEstimator(object):
                                parameterType="Required", direction="Input")
         crop.description = (
             "Raster of cropland classification codes. "
-            "Determines which land cover type is evaluated for flood damage."
+            "Switching rasters changes which crop types are analyzed and therefore"
+            " which per-acre values feed into the damage model."
         )
         out = arcpy.Parameter(displayName="Output Folder", name="output_folder", datatype="DEFolder",
                               parameterType="Required", direction="Output")
         out.description = (
-            "Folder where result tables, Excel summaries, and optional damage points will be written."
+            "Folder where result tables, Excel summaries, and optional damage points will be written. "
+            "Location only affects where outputs are stored, not the damage calculations themselves."
         )
         val = arcpy.Parameter(displayName="Default Crop Value per Acre", name="value_acre", datatype="Double",
                               parameterType="Required", direction="Input")
         val.value = 1200
         val.description = (
             "Dollar value applied per acre for crops not found in the predefined list. "
-            "Higher values increase estimated damages for unidentified crops."
+            "Raising this value increases damage estimates for unknown crops, while lowering it reduces them."
         )
         season = arcpy.Parameter(displayName="Default Growing Season (comma separated months; blank = year-round, mismatches warn)",
                                  name="season_months", datatype="String", parameterType="Optional", direction="Input")
         season.value = "6"
         season.description = (
             "Comma separated list of growing season months (1-12). "
-            "Flood events outside these months are ignored; leave blank for year-round growth."
+            "Floods occurring outside the listed months contribute no damage, so changing the list alters which events are counted."
         )
         curve = arcpy.Parameter(displayName="Depth-Damage Curve (depth:fraction, comma separated)",
                                 name="curve", datatype="String", parameterType="Required", direction="Input")
         curve.value = "0:1,1:1"
         curve.description = (
             "Pairs of flood depth and damage fraction (e.g., '0:0,1:0.5,2:1'). "
-            "Defines what fraction of crop value is lost at given water depths."
+            "Editing these points changes how quickly losses climb with depth, directly affecting damage totals."
         )
         event_info = arcpy.Parameter(displayName="Event Information", name="event_info", datatype="Value Table",
                                      parameterType="Required", direction="Input")
@@ -242,7 +244,7 @@ class AgFloodDamageEstimator(object):
         event_info.value = [["", 6, 100]]
         event_info.description = (
             "Table of flood events with depth rasters, flood month, and return period. "
-            "Each event is simulated and contributes to expected annual damage."
+            "Adding or modifying rows changes which scenarios are modeled and their frequency, influencing total expected damage."
         )
 
         stddev = arcpy.Parameter(
@@ -255,7 +257,7 @@ class AgFloodDamageEstimator(object):
         stddev.value = 0.1
         stddev.description = (
             "Standard deviation applied to the damage fractions during Monte Carlo simulations. "
-            "Larger values model greater uncertainty in the depth-damage curve."
+            "Higher values introduce more variability in outcomes, modeling greater uncertainty in the curve."
         )
 
         mc = arcpy.Parameter(
@@ -268,7 +270,7 @@ class AgFloodDamageEstimator(object):
         mc.value = 10
         mc.description = (
             "Number of Monte Carlo iterations for each event per year. "
-            "More simulations yield more stable averages but increase processing time."
+            "Increasing the count stabilizes averages but lengthens processing time."
         )
 
         seed = arcpy.Parameter(
@@ -280,7 +282,8 @@ class AgFloodDamageEstimator(object):
         )
         seed.value = 10
         seed.description = (
-            "Seed value for the random number generator to ensure reproducible simulations."
+            "Seed value for the random number generator to ensure reproducible simulations. "
+            "Changing it yields different random sequences and hence different simulated damages."
         )
 
         rand_month = arcpy.Parameter(
@@ -292,7 +295,8 @@ class AgFloodDamageEstimator(object):
         )
         rand_month.value = False
         rand_month.description = (
-            "If checked, randomly selects the flood month in simulations instead of using the month provided for each event."
+            "If checked, randomly selects the flood month in simulations instead of using the month provided for each event. "
+            "Randomizing months can move events into or out of the growing season, altering damage totals."
         )
 
         depth_sd = arcpy.Parameter(
@@ -305,7 +309,7 @@ class AgFloodDamageEstimator(object):
         depth_sd.value = 0.0
         depth_sd.description = (
             "Standard deviation for adding normally distributed noise to flood depths. "
-            "Introduces uncertainty in flood depth measurements."
+            "Higher values produce greater depth variation, which affects interpolated damage fractions."
         )
 
         value_sd = arcpy.Parameter(
@@ -318,7 +322,7 @@ class AgFloodDamageEstimator(object):
         value_sd.value = 0.0
         value_sd.description = (
             "Standard deviation for crop values per acre. "
-            "Models uncertainty in crop valuation applied during simulations."
+            "Increasing the deviation widens the range of possible crop values, changing overall damage estimates."
         )
 
         analysis = arcpy.Parameter(
@@ -331,7 +335,7 @@ class AgFloodDamageEstimator(object):
         analysis.value = 1
         analysis.description = (
             "Number of years to simulate for each event. "
-            "Damages are projected over this analysis period."
+            "Extending the period scales damages across more years of exposure."
         )
 
         pts = arcpy.Parameter(
@@ -343,7 +347,7 @@ class AgFloodDamageEstimator(object):
         )
         pts.description = (
             "Optional feature class storing per-pixel average damage for visualization. "
-            "Leave blank to skip creating damage point output."
+            "Creating this output enables spatial analysis but increases processing time; leaving it blank skips this step."
         )
 
         return [
