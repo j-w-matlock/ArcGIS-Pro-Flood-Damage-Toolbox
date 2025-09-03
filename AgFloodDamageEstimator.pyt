@@ -222,18 +222,93 @@ class AgFloodDamageEstimator(object):
         event_info.columns = [["Raster Layer", "Raster"], ["GPLong", "Month"], ["GPLong", "Return Period"]]
         event_info.value = [["", 6, 100]]
 
-        stddev = arcpy.Parameter(displayName="Uncertainty Std. Dev. (fraction of loss)", name="uncertainty", datatype="Double",
-                                 parameterType="Required", direction="Input")
+        stddev = arcpy.Parameter(
+            displayName="Damage Fraction Std. Dev.",
+            name="uncertainty",
+            datatype="Double",
+            parameterType="Required",
+            direction="Input",
+        )
         stddev.value = 0.1
-        mc = arcpy.Parameter(displayName="Monte Carlo Simulations", name="mc_runs", datatype="Long",
-                             parameterType="Required", direction="Input")
+
+        mc = arcpy.Parameter(
+            displayName="Monte Carlo Simulations",
+            name="mc_runs",
+            datatype="Long",
+            parameterType="Required",
+            direction="Input",
+        )
         mc.value = 10
-        seed = arcpy.Parameter(displayName="Random Seed", name="random_seed", datatype="Long",
-                               parameterType="Required", direction="Input")
+
+        seed = arcpy.Parameter(
+            displayName="Random Seed",
+            name="random_seed",
+            datatype="Long",
+            parameterType="Required",
+            direction="Input",
+        )
         seed.value = 10
-        pts = arcpy.Parameter(displayName="Output Damage Points", name="damage_points", datatype="DEFeatureClass",
-                               parameterType="Optional", direction="Output")
-        return [crop, out, val, season, curve, event_info, stddev, mc, seed, pts]
+
+        rand_month = arcpy.Parameter(
+            displayName="Randomize Flood Month",
+            name="random_month",
+            datatype="Boolean",
+            parameterType="Optional",
+            direction="Input",
+        )
+        rand_month.value = False
+
+        depth_sd = arcpy.Parameter(
+            displayName="Flood Depth Std. Dev.",
+            name="depth_stddev",
+            datatype="Double",
+            parameterType="Optional",
+            direction="Input",
+        )
+        depth_sd.value = 0.0
+
+        value_sd = arcpy.Parameter(
+            displayName="Crop Value Std. Dev.",
+            name="value_stddev",
+            datatype="Double",
+            parameterType="Optional",
+            direction="Input",
+        )
+        value_sd.value = 0.0
+
+        analysis = arcpy.Parameter(
+            displayName="Analysis Period (years)",
+            name="analysis_years",
+            datatype="Long",
+            parameterType="Optional",
+            direction="Input",
+        )
+        analysis.value = 1
+
+        pts = arcpy.Parameter(
+            displayName="Output Damage Points",
+            name="damage_points",
+            datatype="DEFeatureClass",
+            parameterType="Optional",
+            direction="Output",
+        )
+
+        return [
+            crop,
+            out,
+            val,
+            season,
+            curve,
+            event_info,
+            stddev,
+            mc,
+            seed,
+            rand_month,
+            depth_sd,
+            value_sd,
+            analysis,
+            pts,
+        ]
 
     def execute(self, params, messages):
         crop_path = params[0].valueAsText
@@ -242,10 +317,14 @@ class AgFloodDamageEstimator(object):
         season_str = params[3].value
         curve_str = params[4].value
         event_table = params[5].values
-        stddev = float(params[6].value)
+        frac_std = float(params[6].value)
         runs = int(params[7].value)
         rand = Random(int(params[8].value))
-        out_points = params[9].valueAsText if params[9].value else None
+        random_month = bool(params[9].value) if params[9].value is not None else False
+        depth_std = float(params[10].value) if params[10].value is not None else 0.0
+        value_std = float(params[11].value) if params[11].value is not None else 0.0
+        analysis_years = int(params[12].value) if params[12].value is not None else 1
+        out_points = params[13].valueAsText if params[13].value else None
 
         os.makedirs(out_dir, exist_ok=True)
 
@@ -323,100 +402,7 @@ class AgFloodDamageEstimator(object):
                     f"Masked depth raster {label} shape does not match crop raster. "
                     f"Crop: {crop_arr.shape}, Depth: {depth_arr.shape}"
                 )
-            for idx, row in df_csv.iterrows():
-                try:
-                    code = int(row["CropCode"])
-                except Exception:
-                    raise ValueError(
-                        f"Invalid CropCode at row {idx}: {row['CropCode']}"
-                    )
-                try:
-                    value = float(row["ValuePerAcre"])
-                except Exception:
-                    raise ValueError(
-                        f"Invalid ValuePerAcre for crop code {row['CropCode']}"
-                    )
-                months = _parse_months(row["GrowingSeason"], f"crop code {code}")
-                crop_table[code] = {"Value": value, "GrowingSeason": months}
-        else:
-            months = _parse_months(default_months, "default growing season")
-            for code in top_codes:
-                crop_table[code] = {
-                    "Value": float(default_val),
-                    "GrowingSeason": months,
-                }
 
-        crop_table = {c: v for c, v in crop_table.items() if c in top_codes}
-
-        def _safe(name: str) -> str:
-            name = os.path.splitext(os.path.basename(str(name)))[0]
-            name = re.sub(r"[^0-9A-Za-z_]+", "_", name)
-            return name.strip("_")
-
-        messages.addMessage("Sampling depth rasters")
-        depth_arrays: Dict[str, np.ndarray] = {}
-        for path in depth_rasters:
-            label = _safe(path)
-            depth_arrays[label] = arcpy.RasterToNumPyArray(path)
-        messages.addMessage(f"Processed {len(depth_arrays)} depth rasters")
-
-        value_arr = np.zeros_like(base_crop_arr, dtype=float)
-        for code, props in crop_table.items():
-            value_arr[base_crop_arr == code] = props["Value"]
-
-        damage_tables: Dict[str, float] = {}
-        for label, arr in depth_arrays.items():
-            mask = arr > 0
-            damage_tables[label] = float(value_arr[mask].sum())
-
-        event_table: Dict[str, Dict[str, float]] = {}
-        for row in event_info:
-            if len(row) < 3:
-                raise ValueError(
-                    "Event information rows must include Raster, Month, and Return Period"
-                )
-            raster = row[0]
-            if not arcpy.Exists(raster):
-                raise ValueError(f"Raster path does not exist: {raster}")
-            try:
-                month = int(str(row[1]))
-            except Exception:
-                raise ValueError(f"Invalid Month '{row[1]}' for raster {raster}")
-            if month < 1 or month > 12:
-                raise ValueError(f"Month {month} for raster {raster} out of range 1-12")
-            # Check growing season
-            try:
-                month = int(month)
-            except (TypeError, ValueError):
-                month = None
-            if season_months and month and month not in season_months:
-                messages.addWarningMessage(
-                    f"Event month {month} outside growing season; treated as year-round"
-                )
-            label = _safe(raster)
-            event_table[label] = {"Path": raster, "Month": month, "RP": rp}
-
-        messages.addMessage(f"Top 50 crop codes: {list(crop_table.keys())}")
-
-        arcpy.SetProgressor("step", "Running Monte Carlo simulations", 0, mc_sims, 1)
-        mc_totals: List[float] = []
-        for i in range(mc_sims):
-            arcpy.SetProgressorLabel(f"Simulation {i + 1} of {mc_sims}")
-            total = 0.0
-            for dmg in damage_tables.values():
-                factor = max(np.random.normal(1.0, mc_std), 0)
-                total += dmg * factor
-            mc_totals.append(total)
-            arcpy.SetProgressorPosition(i + 1)
-        arcpy.ResetProgressor()
-        messages.addMessage(f"Completed {mc_sims} simulations")
-
-        messages.addMessage("Aggregating simulation results")
-        mean_damage = float(np.mean(mc_totals))
-        sd_damage = float(np.std(mc_totals))
-        messages.addMessage(
-            f"Mean damage: {mean_damage:,.2f}; Standard deviation: {sd_damage:,.2f}"
-        )
             mask = (crop_arr > 0) & (depth_arr > 0)
             crop_masked = crop_arr[mask].astype(int)
             depth_masked = depth_arr[mask]
@@ -434,25 +420,43 @@ class AgFloodDamageEstimator(object):
             pixel_counts_arr = np.bincount(crop_masked, minlength=max_code + 1)
             pixel_counts = {c: int(pixel_counts_arr[c]) for c in crop_codes}
 
-            base_frac = np.interp(
-                depth_masked, curve_depths, curve_fracs, left=curve_fracs[0], right=curve_fracs[-1]
-            )
-
             damages_runs = {c: [] for c in crop_codes}
             damage_accum = np.zeros_like(depth_arr, dtype=float) if out_points else None
 
-            for _ in range(runs):
-                if stddev > 0:
-                    rng = np.random.default_rng(rand.randint(0, 2**32 - 1))
-                    frac = base_frac + rng.normal(0, stddev, size=base_frac.shape)
-                    frac = np.clip(frac, 0, 1)
-                else:
-                    frac = base_frac
+            total_runs = runs * analysis_years
+            for _ in range(total_runs):
+                sim_month = rand.randint(1, 12) if random_month else month
+                if season_months and sim_month not in season_months:
+                    for c in crop_codes:
+                        damages_runs[c].append(0.0)
+                    if out_points:
+                        continue
+                    else:
+                        continue
 
-                dmg_vals = frac * val_lookup[crop_masked] * cell_area_acres
-                dmg_per_crop = np.bincount(
-                    crop_masked, weights=dmg_vals, minlength=max_code + 1
+                rng = np.random.default_rng(rand.randint(0, 2**32 - 1))
+                depth_sim = depth_masked
+                if depth_std > 0:
+                    depth_sim = depth_masked + rng.normal(0, depth_std, size=depth_masked.shape)
+                    depth_sim = np.clip(depth_sim, 0, None)
+
+                frac = np.interp(
+                    depth_sim,
+                    curve_depths,
+                    curve_fracs,
+                    left=curve_fracs[0],
+                    right=curve_fracs[-1],
                 )
+                if frac_std > 0:
+                    frac = frac + rng.normal(0, frac_std, size=frac.shape)
+                    frac = np.clip(frac, 0, 1)
+
+                values = val_lookup[crop_masked]
+                if value_std > 0:
+                    values = values * np.clip(1 + rng.normal(0, value_std, size=values.shape), 0, None)
+
+                dmg_vals = frac * values * cell_area_acres
+                dmg_per_crop = np.bincount(crop_masked, weights=dmg_vals, minlength=max_code + 1)
                 for c in crop_codes:
                     damages_runs[c].append(float(dmg_per_crop[c]))
 
@@ -460,7 +464,7 @@ class AgFloodDamageEstimator(object):
                     damage_accum[mask] += dmg_vals
 
             if out_points:
-                damage_avg = damage_accum / runs
+                damage_avg = damage_accum / total_runs
                 xmin, ymin, xmax, ymax = inter
                 cw = crop_ras.meanCellWidth
                 ch = crop_ras.meanCellHeight
@@ -471,15 +475,17 @@ class AgFloodDamageEstimator(object):
                         if mask[i, j]:
                             crop_code = int(crop_arr[i, j])
                             landcover = CROP_DEFINITIONS.get(crop_code, ("Unknown", value_acre))[0]
-                            points.append((
-                                x0 + j * cw,
-                                y0 - i * ch,
-                                crop_code,
-                                landcover,
-                                float(damage_avg[i, j]),
-                                label,
-                                float(rp),
-                            ))
+                            points.append(
+                                (
+                                    x0 + j * cw,
+                                    y0 - i * ch,
+                                    crop_code,
+                                    landcover,
+                                    float(damage_avg[i, j]),
+                                    label,
+                                    float(rp),
+                                )
+                            )
 
             for c in crop_codes:
                 arr = np.array(damages_runs[c], dtype=float)
@@ -488,18 +494,20 @@ class AgFloodDamageEstimator(object):
                 p05 = float(np.percentile(arr, 5))
                 p95 = float(np.percentile(arr, 95))
                 name, _ = CROP_DEFINITIONS.get(c, ("Unknown", value_acre))
-                results.append({
-                    "Label": label,
-                    "RP": float(rp),
-                    "Crop": int(c),
-                    "LandCover": name,
-                    "Damage": avg_damage,
-                    "StdDev": std_damage,
-                    "P05": p05,
-                    "P95": p95,
-                    "FloodedAcres": pixel_counts[c] * cell_area_acres,
-                    "FloodedPixels": pixel_counts[c],
-                })
+                results.append(
+                    {
+                        "Label": label,
+                        "RP": float(rp),
+                        "Crop": int(c),
+                        "LandCover": name,
+                        "Damage": avg_damage,
+                        "StdDev": std_damage,
+                        "P05": p05,
+                        "P95": p95,
+                        "FloodedAcres": pixel_counts[c] * cell_area_acres,
+                        "FloodedPixels": pixel_counts[c],
+                    }
+                )
 
         if not results:
             raise ValueError("No valid events provided")
