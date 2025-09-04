@@ -224,12 +224,53 @@ class AgFloodDamageEstimator(object):
             "Dollar value applied per acre for crops not found in the predefined list. "
             "Raising this value increases damage estimates for unknown crops, while lowering it reduces them."
         )
-        season = arcpy.Parameter(displayName="Default Growing Season (comma separated months; blank = year-round, mismatches warn)",
-                                 name="season_months", datatype="String", parameterType="Optional", direction="Input")
-        season.value = "6"
-        season.description = (
-            "Comma separated list of growing season months (1-12). "
-            "Floods occurring outside the listed months contribute no damage, so changing the list alters which events are counted."
+        winter = arcpy.Parameter(
+            displayName="Winter Growing Months",
+            name="winter_months",
+            datatype="String",
+            parameterType="Optional",
+            direction="Input",
+        )
+        winter.value = "12,1,2"
+        winter.description = (
+            "Comma separated months between the winter and spring equinox. "
+            "Months listed here are considered part of the winter growing season."
+        )
+        spring = arcpy.Parameter(
+            displayName="Spring Growing Months",
+            name="spring_months",
+            datatype="String",
+            parameterType="Optional",
+            direction="Input",
+        )
+        spring.value = "3,4,5"
+        spring.description = (
+            "Comma separated months between the spring and summer equinox. "
+            "Months listed here are considered part of the spring growing season."
+        )
+        summer = arcpy.Parameter(
+            displayName="Summer Growing Months",
+            name="summer_months",
+            datatype="String",
+            parameterType="Optional",
+            direction="Input",
+        )
+        summer.value = "6,7,8"
+        summer.description = (
+            "Comma separated months between the summer and fall equinox. "
+            "Months listed here are considered part of the summer growing season."
+        )
+        fall = arcpy.Parameter(
+            displayName="Fall Growing Months",
+            name="fall_months",
+            datatype="String",
+            parameterType="Optional",
+            direction="Input",
+        )
+        fall.value = "9,10,11"
+        fall.description = (
+            "Comma separated months between the fall and winter equinox. "
+            "Months listed here are considered part of the fall growing season."
         )
         curve = arcpy.Parameter(displayName="Depth-Damage Curve (depth in ft:fraction, comma separated)",
                                 name="curve", datatype="String", parameterType="Required", direction="Input")
@@ -245,11 +286,15 @@ class AgFloodDamageEstimator(object):
             parameterType="Optional",
             direction="Input",
         )
-        specific_curve.columns = [["GPLong", "Crop Code"], ["GPString", "Depth-Damage Curve"]]
+        specific_curve.columns = [
+            ["GPLong", "Crop Code"],
+            ["GPString", "Depth-Damage Curve"],
+            ["GPString", "Grow Months"],
+        ]
         specific_curve.description = (
             "Optional crop-specific depth-damage curves. "
-            "Provide a crop code on one line and its depth-damage curve on the line below, "
-            "formatted like '0:0,1:0.5,2:1'. Listed codes override the default curve."
+            "Provide a crop code, its depth-damage curve, and an optional list of growing season months "
+            "formatted like '0:0,1:0.5,2:1' and '6,7,8'. Listed codes override the default curve and months."
         )
         event_info = arcpy.Parameter(displayName="Event Information", name="event_info", datatype="Value Table",
                                      parameterType="Required", direction="Input")
@@ -311,6 +356,34 @@ class AgFloodDamageEstimator(object):
             "If checked, randomly selects the flood month in simulations instead of using the month provided for each event. "
             "Randomizing months can move events into or out of the growing season, altering damage totals."
         )
+        rand_season = arcpy.Parameter(
+            displayName="Randomize Flood Season",
+            name="random_season",
+            datatype="Boolean",
+            parameterType="Optional",
+            direction="Input",
+        )
+        rand_season.value = False
+        rand_season.description = (
+            "If checked, selects a flood season based on provided probabilities and then picks a random month within that season."
+        )
+        season_prob = arcpy.Parameter(
+            displayName="Season Probabilities",
+            name="season_probs",
+            datatype="Value Table",
+            parameterType="Optional",
+            direction="Input",
+        )
+        season_prob.columns = [["GPString", "Season"], ["GPDouble", "Probability"]]
+        season_prob.value = [
+            ["Winter", 0.25],
+            ["Spring", 0.25],
+            ["Summer", 0.25],
+            ["Fall", 0.25],
+        ]
+        season_prob.description = (
+            "Probability weights for each season when randomizing flood season. Weights will be normalized." 
+        )
 
         depth_sd = arcpy.Parameter(
             displayName="Flood Depth Std. Dev. (ft)",
@@ -367,7 +440,10 @@ class AgFloodDamageEstimator(object):
             crop,
             out,
             val,
-            season,
+            winter,
+            spring,
+            summer,
+            fall,
             curve,
             specific_curve,
             event_info,
@@ -375,6 +451,8 @@ class AgFloodDamageEstimator(object):
             mc,
             seed,
             rand_month,
+            rand_season,
+            season_prob,
             depth_sd,
             value_sd,
             analysis,
@@ -385,18 +463,23 @@ class AgFloodDamageEstimator(object):
         crop_path = params[0].valueAsText
         out_dir = params[1].valueAsText
         value_acre = float(params[2].value)
-        season_str = params[3].value
-        curve_str = params[4].value
-        specific_table = params[5].values if params[5].values else []
-        event_table = params[6].values
-        frac_std = float(params[7].value)
-        runs = int(params[8].value)
-        rand = Random(int(params[9].value))
-        random_month = bool(params[10].value) if params[10].value is not None else False
-        depth_std = float(params[11].value) if params[11].value is not None else 0.0
-        value_std = float(params[12].value) if params[12].value is not None else 0.0
-        analysis_years = int(params[13].value) if params[13].value is not None else 1
-        out_points = params[14].valueAsText if params[14].value else None
+        winter_str = params[3].value
+        spring_str = params[4].value
+        summer_str = params[5].value
+        fall_str = params[6].value
+        curve_str = params[7].value
+        specific_table = params[8].values if params[8].values else []
+        event_table = params[9].values
+        frac_std = float(params[10].value)
+        runs = int(params[11].value)
+        rand = Random(int(params[12].value))
+        random_month = bool(params[13].value) if params[13].value is not None else False
+        random_season = bool(params[14].value) if params[14].value is not None else False
+        season_prob_table = params[15].values if params[15].values else []
+        depth_std = float(params[16].value) if params[16].value is not None else 0.0
+        value_std = float(params[17].value) if params[17].value is not None else 0.0
+        analysis_years = int(params[18].value) if params[18].value is not None else 1
+        out_points = params[19].valueAsText if params[19].value else None
 
         os.makedirs(out_dir, exist_ok=True)
 
@@ -405,12 +488,18 @@ class AgFloodDamageEstimator(object):
         curve_fracs = np.array([f for _, f in damage_curve_pts], dtype=float)
         specific_curves = {}
         for row in specific_table:
-            code, curve_txt = row
+            if len(row) < 2:
+                continue
+            code = row[0]
+            curve_txt = row[1]
+            grow_txt = row[2] if len(row) > 2 else None
             if curve_txt:
                 pts = parse_curve(curve_txt)
+                months = parse_months(grow_txt)
                 specific_curves[int(code)] = (
                     np.array([d for d, _ in pts], dtype=float),
                     np.array([f for _, f in pts], dtype=float),
+                    months,
                 )
         crop_ras = arcpy.Raster(crop_path)
 
@@ -421,8 +510,35 @@ class AgFloodDamageEstimator(object):
             desc.meanCellWidth * desc.meanCellHeight * meters_per_unit ** 2 / 4046.8564224
         )
 
-        # Growing season months as set of ints or None for year-round
-        season_months = parse_months(season_str)
+        # Growing season months for each season
+        winter_months = parse_months(winter_str)
+        spring_months = parse_months(spring_str)
+        summer_months = parse_months(summer_str)
+        fall_months = parse_months(fall_str)
+        season_lookup = {
+            "Winter": winter_months,
+            "Spring": spring_months,
+            "Summer": summer_months,
+            "Fall": fall_months,
+        }
+        season_months = set()
+        for s in season_lookup.values():
+            if s:
+                season_months.update(s)
+        if not season_months:
+            season_months = None
+        season_prob_dict = {}
+        for s, p in season_prob_table:
+            season_prob_dict[str(s)] = float(p)
+        if not season_prob_dict:
+            season_prob_dict = {"Winter": 0.25, "Spring": 0.25, "Summer": 0.25, "Fall": 0.25}
+        season_names = list(season_lookup.keys())
+        weights = [season_prob_dict.get(s, 1.0) for s in season_names]
+        total_w = sum(weights)
+        if total_w <= 0:
+            weights = [1.0] * len(season_names)
+        else:
+            weights = [w / total_w for w in weights]
 
         results = []
         points = []
@@ -493,7 +609,7 @@ class AgFloodDamageEstimator(object):
                 continue
 
             spec_masks = {}
-            for code, _ in specific_curves.items():
+            for code, (d_arr, f_arr, _) in specific_curves.items():
                 m = crop_masked == code
                 if np.any(m):
                     spec_masks[code] = m
@@ -512,8 +628,25 @@ class AgFloodDamageEstimator(object):
 
             total_runs = runs * analysis_years
             for _ in range(total_runs):
-                sim_month = rand.randint(1, 12) if random_month else month
-                if season_months and sim_month not in season_months:
+                if random_season:
+                    sel_season = rand.choices(season_names, weights=weights)[0]
+                    months_sel = season_lookup.get(sel_season)
+                    if months_sel:
+                        sim_month = rand.choice(list(months_sel))
+                    else:
+                        sim_month = rand.randint(1, 12)
+                elif random_month:
+                    sim_month = rand.randint(1, 12)
+                else:
+                    sim_month = month
+
+                active_mask = np.zeros_like(crop_masked, dtype=bool)
+                for c in crop_codes:
+                    _, _, gm = specific_curves.get(c, (None, None, season_months))
+                    gm = gm if gm is not None else season_months
+                    if gm is None or sim_month in gm:
+                        active_mask[crop_masked == c] = True
+                if not active_mask.any():
                     for c in crop_codes:
                         damages_runs[c].append(0.0)
                     if out_points:
@@ -535,7 +668,7 @@ class AgFloodDamageEstimator(object):
                     right=curve_fracs[-1],
                 )
                 for code, m in spec_masks.items():
-                    d_arr, f_arr = specific_curves[code]
+                    d_arr, f_arr, _ = specific_curves[code]
                     frac[m] = np.interp(
                         depth_sim[m],
                         d_arr,
@@ -550,6 +683,7 @@ class AgFloodDamageEstimator(object):
                 values = val_lookup[crop_masked]
                 if value_std > 0:
                     values = values * np.clip(1 + rng.normal(0, value_std, size=values.shape), 0, None)
+                values[~active_mask] = 0
 
                 dmg_vals = frac * values * cell_area_acres
                 dmg_per_crop = np.bincount(crop_masked, weights=dmg_vals, minlength=max_code + 1)
@@ -602,6 +736,7 @@ class AgFloodDamageEstimator(object):
                         "P95": p95,
                         "FloodedAcres": pixel_counts[c] * cell_area_acres,
                         "FloodedPixels": pixel_counts[c],
+                        "ValuePerAcre": float(val_lookup[c]),
                     }
                 )
 
