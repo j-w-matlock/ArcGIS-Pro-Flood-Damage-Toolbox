@@ -743,28 +743,44 @@ class AgFloodDamageEstimator(object):
         if not results:
             raise ValueError("No valid events provided")
 
-        # --- Trapezoidal EAD ---
+        # --- EAD calculations ---
         df_events = pd.DataFrame(results)
 
-        def calc_ead(df):
-            df = df.sort_values("RP", ascending=False)
-            probs = 1 / df["RP"].to_numpy()
-            damages = df["Damage"].to_numpy()
-            probs = np.concatenate(([0.0], probs, [1.0]))
-            damages = np.concatenate(([damages[0]], damages, [0.0]))
-            return float(np.trapz(damages, probs))
+        def calc_ead_discrete(df):
+            return float((df["Damage"] / df["RP"]).sum())
 
-        # Total EAD
+        # Total EAD (discrete method)
         df_total = df_events.groupby(["Label", "RP"], as_index=False)["Damage"].sum()
-        ead_total = calc_ead(df_total)
+        ead_total = calc_ead_discrete(df_total)
 
-        # EAD per crop
-        eads_crop = {name: calc_ead(g) for name, g in df_events.groupby("LandCover")}
+        # EAD per crop (discrete method)
+        eads_crop = {name: calc_ead_discrete(g) for name, g in df_events.groupby("LandCover")}
 
-        # Write CSV for overall EAD
+        # Optional trapezoidal EAD when multiple return periods are provided
+        ead_total_trap = None
+        eads_crop_trap = {}
+        if df_total["RP"].nunique() > 1:
+            def calc_ead_trap(df):
+                df = df.sort_values("RP", ascending=False)
+                probs = 1 / df["RP"].to_numpy()
+                damages = df["Damage"].to_numpy()
+                probs = np.concatenate(([0.0], probs, [1.0]))
+                damages = np.concatenate(([damages[0]], damages, [0.0]))
+                return float(np.trapz(damages, probs))
+
+            ead_total_trap = calc_ead_trap(df_total)
+            eads_crop_trap = {name: calc_ead_trap(g) for name, g in df_events.groupby("LandCover")}
+
+        # Write CSV for overall EAD (discrete)
         with open(os.path.join(out_dir, "ead.csv"), "w") as f:
             f.write(f"EAD,{ead_total}\n")
-        messages.addMessage(f"Expected Annual Damage (Trapezoidal): {ead_total:,.0f}")
+        messages.addMessage(f"Expected Annual Damage (Discrete): {ead_total:,.0f}")
+
+        # Trapezoidal CSV and message if applicable
+        if ead_total_trap is not None:
+            with open(os.path.join(out_dir, "ead_trapezoidal.csv"), "w") as f:
+                f.write(f"EAD,{ead_total_trap}\n")
+            messages.addMessage(f"Expected Annual Damage (Trapezoidal): {ead_total_trap:,.0f}")
 
         # Export detailed results to Excel with charts
         excel_path = os.path.join(out_dir, "damage_results.xlsx")
@@ -776,9 +792,14 @@ class AgFloodDamageEstimator(object):
             pivot = df_events.pivot_table(index="Label", columns="LandCover", values="Damage", fill_value=0)
             pivot.to_excel(writer, sheet_name="EventPivot")
 
-            # EAD per crop table
+            # EAD per crop table (discrete)
             df_ead = pd.DataFrame([{"LandCover": k, "EAD": v} for k, v in eads_crop.items()])
             df_ead.to_excel(writer, sheet_name="EAD", index=False)
+
+            # Optional trapezoidal EAD per crop table
+            if ead_total_trap is not None:
+                df_ead_trap = pd.DataFrame([{"LandCover": k, "EAD": v} for k, v in eads_crop_trap.items()])
+                df_ead_trap.to_excel(writer, sheet_name="EAD_Trapezoidal", index=False)
 
             # Chart for event damages
             worksheet_pivot = writer.sheets["EventPivot"]
@@ -796,18 +817,32 @@ class AgFloodDamageEstimator(object):
             chart1.set_categories(cats_ref)
             worksheet_pivot.add_chart(chart1, "H2")
 
-            # Chart for EAD per crop
+            # Chart for EAD per crop (discrete)
             worksheet_ead = writer.sheets["EAD"]
             data_ref2 = Reference(worksheet_ead, min_col=2, min_row=1, max_row=len(df_ead) + 1)
             cats_ref2 = Reference(worksheet_ead, min_col=1, min_row=2, max_row=len(df_ead) + 1)
             chart2 = BarChart()
             chart2.type = "col"
-            chart2.title = "Expected Annual Damage by Land Cover"
+            chart2.title = "Expected Annual Damage by Land Cover (Discrete)"
             chart2.x_axis.title = "Land Cover"
             chart2.y_axis.title = "EAD"
             chart2.add_data(data_ref2, titles_from_data=True)
             chart2.set_categories(cats_ref2)
             worksheet_ead.add_chart(chart2, "D2")
+
+            # Chart for EAD per crop (trapezoidal) if present
+            if ead_total_trap is not None:
+                worksheet_ead_trap = writer.sheets["EAD_Trapezoidal"]
+                data_ref3 = Reference(worksheet_ead_trap, min_col=2, min_row=1, max_row=len(df_ead_trap) + 1)
+                cats_ref3 = Reference(worksheet_ead_trap, min_col=1, min_row=2, max_row=len(df_ead_trap) + 1)
+                chart3 = BarChart()
+                chart3.type = "col"
+                chart3.title = "Expected Annual Damage by Land Cover (Trapezoidal)"
+                chart3.x_axis.title = "Land Cover"
+                chart3.y_axis.title = "EAD"
+                chart3.add_data(data_ref3, titles_from_data=True)
+                chart3.set_categories(cats_ref3)
+                worksheet_ead_trap.add_chart(chart3, "D2")
 
         if out_points:
             if arcpy.Exists(out_points):

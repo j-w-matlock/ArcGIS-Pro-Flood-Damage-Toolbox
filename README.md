@@ -25,10 +25,9 @@ performs a Monte Carlo analysis with user-defined uncertainty and number
 of simulations. The Monte Carlo engine now allows optional uncertainty in
 flood month, flood depth and crop value, and the analysis period can be
 specified in years to align with USACE CAFRE workflows. Results are calculated for each impacted crop and
-annualized using the U.S. Army Corps of Engineers trapezoidal expected
-annual damage method. A detailed Excel workbook with per-event damages,
-per-crop expected annual damages and illustrative charts is created for
-full transparency. The exported tables include both crop codes and
+annualized using a discrete 1/return-period method. When multiple return periods are supplied, the toolbox also
+computes a trapezoidal expected annual damage estimate. The Excel workbook includes separate tabs for each
+approach with per-event damages, per-crop expected annual damages and illustrative charts. The exported tables include both crop codes and
 human-readable land-cover names. Per-event damage exports now also
 include the standard deviation and 5th/95th percentile damages across
 the Monte Carlo simulations to convey uncertainty, along with the number
