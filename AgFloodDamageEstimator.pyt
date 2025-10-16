@@ -650,6 +650,15 @@ class AgFloodDamageEstimator(object):
             damages_runs = {c: [] for c in crop_codes}
             damage_accum = np.zeros_like(depth_arr, dtype=float) if out_points else None
 
+            # Pre-compute boolean masks for each crop code once so we do not
+            # repeatedly allocate large temporary arrays inside the Monte Carlo
+            # loop.  The previous approach recreated "crop_masked == c" for
+            # every crop on every iteration which becomes extremely slow for
+            # large rasters.  Caching the masks ensures that each simulation
+            # run only toggles already computed masks which dramatically
+            # shortens processing time.
+            crop_code_masks = {c: (crop_masked == c) for c in crop_codes}
+
             total_runs = runs * analysis_years
             for _ in range(total_runs):
                 if random_season:
@@ -665,17 +674,15 @@ class AgFloodDamageEstimator(object):
                     sim_month = month
 
                 active_mask = np.zeros_like(crop_masked, dtype=bool)
-                for c in crop_codes:
+                for c, base_mask in crop_code_masks.items():
                     _, _, gm = specific_curves.get(c, (None, None, season_months))
                     gm = gm if gm is not None else season_months
                     if gm is None or sim_month in gm:
-                        active_mask[crop_masked == c] = True
+                        active_mask |= base_mask
                 if not active_mask.any():
                     for c in crop_codes:
                         damages_runs[c].append(0.0)
                     if out_points:
-                        continue
-                    else:
                         continue
 
                 rng = np.random.default_rng(rand.randint(0, 2**32 - 1))
@@ -725,22 +732,31 @@ class AgFloodDamageEstimator(object):
                 ch = clip_height
                 x0 = xmin + cw / 2
                 y0 = ymax - ch / 2
-                for i in range(depth_arr.shape[0]):
-                    for j in range(depth_arr.shape[1]):
-                        if mask[i, j]:
-                            crop_code = int(crop_arr[i, j])
-                            landcover = CROP_DEFINITIONS.get(crop_code, ("Unknown", value_acre))[0]
-                            points.append(
-                                (
-                                    x0 + j * cw,
-                                    y0 - i * ch,
-                                    crop_code,
-                                    landcover,
-                                    float(damage_avg[i, j]),
-                                    label,
-                                    float(rp),
-                                )
-                            )
+
+                # Iterate only over cells that were actually part of the mask
+                # rather than the entire raster extent.  The nested loops over
+                # the full grid previously caused the tool to appear to hang on
+                # larger rasters because it still inspected every pixel even
+                # when most were empty.  Restricting iteration to the masked
+                # cells produces the same output while drastically reducing the
+                # amount of work required.
+                rows, cols = np.nonzero(mask)
+                masked_crops = crop_arr[mask]
+                masked_damages = damage_avg[mask]
+                for row, col, crop_code, dmg in zip(rows, cols, masked_crops, masked_damages):
+                    crop_code = int(crop_code)
+                    landcover = CROP_DEFINITIONS.get(crop_code, ("Unknown", value_acre))[0]
+                    points.append(
+                        (
+                            x0 + col * cw,
+                            y0 - row * ch,
+                            crop_code,
+                            landcover,
+                            float(dmg),
+                            label,
+                            float(rp),
+                        )
+                    )
 
             for c in crop_codes:
                 arr = np.array(damages_runs[c], dtype=float)
@@ -872,8 +888,12 @@ class AgFloodDamageEstimator(object):
         if out_points:
             if arcpy.Exists(out_points):
                 arcpy.management.Delete(out_points)
-            arcpy.management.CreateFeatureclass(os.path.dirname(out_points), os.path.basename(out_points), "POINT",
-                                               spatial_reference=crop_ras.spatialReference)
+            arcpy.management.CreateFeatureclass(
+                os.path.dirname(out_points),
+                os.path.basename(out_points),
+                "POINT",
+                spatial_reference=crop_sr,
+            )
             arcpy.management.AddField(out_points, "Crop", "LONG")
             arcpy.management.AddField(out_points, "LandCover", "TEXT", field_length=50)
             arcpy.management.AddField(out_points, "Damage", "DOUBLE")
