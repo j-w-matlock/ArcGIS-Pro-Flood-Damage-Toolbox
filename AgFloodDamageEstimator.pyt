@@ -682,8 +682,14 @@ class AgFloodDamageEstimator(object):
                 if not active_mask.any():
                     for c in crop_codes:
                         damages_runs[c].append(0.0)
-                    if out_points:
-                        continue
+                    # When no crops are active in the simulated month the
+                    # remaining Monte Carlo work would only propagate zeros.
+                    # Skip immediately to the next iteration so runs that fall
+                    # completely outside the growing season do not waste time
+                    # on interpolation or random draws.  This restores the
+                    # short-circuit behaviour that prevents apparent hangs when
+                    # large event tables contain many out-of-season months.
+                    continue
 
                 rng = np.random.default_rng(rand.randint(0, 2**32 - 1))
                 depth_sim = depth_masked
