@@ -752,6 +752,12 @@ class AgFloodDamageEstimator(object):
                 for row, col, crop_code, dmg in zip(rows, cols, masked_crops, masked_damages):
                     crop_code = int(crop_code)
                     landcover = CROP_DEFINITIONS.get(crop_code, ("Unknown", value_acre))[0]
+                    # Clip text fields to the feature class length to avoid
+                    # "insertRow returned NULL" failures when names exceed the
+                    # field size.  Long raster names are common when rasters
+                    # include full scenario descriptions or timestamps.
+                    landcover = str(landcover)[:255]
+                    event_label = str(label)[:255]
                     points.append(
                         (
                             x0 + col * cw,
@@ -759,7 +765,7 @@ class AgFloodDamageEstimator(object):
                             crop_code,
                             landcover,
                             float(dmg),
-                            label,
+                            event_label,
                             float(rp),
                         )
                     )
@@ -901,9 +907,15 @@ class AgFloodDamageEstimator(object):
                 spatial_reference=crop_sr,
             )
             arcpy.management.AddField(out_points, "Crop", "LONG")
-            arcpy.management.AddField(out_points, "LandCover", "TEXT", field_length=50)
+            # Allow event and landcover labels to store long filenames without
+            # silently truncating values which can lead to insert cursor
+            # failures when the provided string exceeds the field length.
+            # Geodatabases support up to 255 characters for text fields which
+            # is sufficient for typical raster names that include descriptive
+            # prefixes or timestamps.
+            arcpy.management.AddField(out_points, "LandCover", "TEXT", field_length=255)
             arcpy.management.AddField(out_points, "Damage", "DOUBLE")
-            arcpy.management.AddField(out_points, "Event", "TEXT", field_length=50)
+            arcpy.management.AddField(out_points, "Event", "TEXT", field_length=255)
             arcpy.management.AddField(out_points, "RP", "DOUBLE")
             with arcpy.da.InsertCursor(out_points, ["SHAPE@XY", "Crop", "LandCover", "Damage", "Event", "RP"]) as cursor:
                 for x, y, c, lc, dmg, lbl, rp_val in points:
