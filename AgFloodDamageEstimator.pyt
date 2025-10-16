@@ -394,7 +394,7 @@ class AgFloodDamageEstimator(object):
         )
         depth_sd.value = 0.0
         depth_sd.description = (
-            "Standard deviation for adding normally distributed noise to flood depths. "
+            "Standard deviation for adding a normally distributed event-wide offset to flood depths. "
             "Higher values produce greater depth variation, which affects interpolated damage fractions."
         )
 
@@ -407,7 +407,7 @@ class AgFloodDamageEstimator(object):
         )
         value_sd.value = 0.0
         value_sd.description = (
-            "Standard deviation for crop values per acre. "
+            "Standard deviation for crop values per acre (additive, USD/acre). "
             "Increasing the deviation widens the range of possible crop values, changing overall damage estimates."
         )
 
@@ -505,9 +505,22 @@ class AgFloodDamageEstimator(object):
 
         # Cell area in acres
         desc = arcpy.Describe(crop_ras)
-        meters_per_unit = desc.spatialReference.metersPerUnit
+        sr = desc.spatialReference
+        if not sr or getattr(sr, "type", "") != "Projected":
+            raise ValueError(
+                "Crop raster must use a projected coordinate system with linear units"
+                " in meters or feet so acreage can be computed reliably."
+            )
+        meters_per_unit = sr.metersPerUnit
+        if meters_per_unit in (None, 0):
+            raise ValueError(
+                "Crop raster spatial reference does not provide a valid metersPerUnit conversion."
+            )
         cell_area_acres = (
-            desc.meanCellWidth * desc.meanCellHeight * meters_per_unit ** 2 / 4046.8564224
+            abs(desc.meanCellWidth)
+            * abs(desc.meanCellHeight)
+            * meters_per_unit ** 2
+            / 4046.8564224
         )
 
         # Growing season months for each season
@@ -578,7 +591,7 @@ class AgFloodDamageEstimator(object):
                 depth_str,
                 aligned,
                 crop_ras.spatialReference,
-                "NEAREST",
+                "BILINEAR",
                 crop_ras.meanCellWidth,
             )
 
@@ -657,7 +670,8 @@ class AgFloodDamageEstimator(object):
                 rng = np.random.default_rng(rand.randint(0, 2**32 - 1))
                 depth_sim = depth_masked
                 if depth_std > 0:
-                    depth_sim = depth_masked + rng.normal(0, depth_std, size=depth_masked.shape)
+                    depth_offset = rng.normal(0, depth_std)
+                    depth_sim = np.clip(depth_masked + depth_offset, 0, None)
                     depth_sim = np.clip(depth_sim, 0, None)
 
                 frac = np.interp(
@@ -682,7 +696,7 @@ class AgFloodDamageEstimator(object):
 
                 values = val_lookup[crop_masked]
                 if value_std > 0:
-                    values = values * np.clip(1 + rng.normal(0, value_std, size=values.shape), 0, None)
+                    values = np.clip(values + rng.normal(0, value_std, size=values.shape), 0, None)
                 values[~active_mask] = 0
 
                 dmg_vals = frac * values * cell_area_acres
