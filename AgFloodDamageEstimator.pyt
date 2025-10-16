@@ -394,7 +394,7 @@ class AgFloodDamageEstimator(object):
         )
         depth_sd.value = 0.0
         depth_sd.description = (
-            "Standard deviation for adding normally distributed noise to flood depths. "
+            "Standard deviation for adding a normally distributed event-wide offset to flood depths. "
             "Higher values produce greater depth variation, which affects interpolated damage fractions."
         )
 
@@ -407,7 +407,7 @@ class AgFloodDamageEstimator(object):
         )
         value_sd.value = 0.0
         value_sd.description = (
-            "Standard deviation for crop values per acre. "
+            "Standard deviation for crop values per acre (additive, USD/acre). "
             "Increasing the deviation widens the range of possible crop values, changing overall damage estimates."
         )
 
@@ -501,14 +501,10 @@ class AgFloodDamageEstimator(object):
                     np.array([f for _, f in pts], dtype=float),
                     months,
                 )
-        crop_ras = arcpy.Raster(crop_path)
-
-        # Cell area in acres
-        desc = arcpy.Describe(crop_ras)
-        meters_per_unit = desc.spatialReference.metersPerUnit
-        cell_area_acres = (
-            desc.meanCellWidth * desc.meanCellHeight * meters_per_unit ** 2 / 4046.8564224
-        )
+        crop_desc = arcpy.Describe(crop_path)
+        crop_sr = getattr(crop_desc, "spatialReference", None)
+        if not crop_sr or crop_sr.name in (None, ""):
+            raise ValueError("Crop raster must have a defined spatial reference.")
 
         # Growing season months for each season
         winter_months = parse_months(winter_str)
@@ -555,8 +551,17 @@ class AgFloodDamageEstimator(object):
             if not depth_str:
                 continue
             depth_desc = arcpy.Describe(depth_str)
-            if crop_ras.extent.disjoint(depth_desc.extent):
-                raise ValueError(f"Depth raster {depth_str} does not overlap crop raster extent")
+            depth_sr = getattr(depth_desc, "spatialReference", None)
+            if not depth_sr or getattr(depth_sr, "type", "") != "Projected":
+                raise ValueError(
+                    f"Depth raster {depth_str} must use a projected coordinate system with linear units"
+                    " in meters or feet so acreage can be computed reliably."
+                )
+            meters_per_unit = depth_sr.metersPerUnit
+            if meters_per_unit in (None, 0):
+                raise ValueError(
+                    f"Depth raster {depth_str} spatial reference does not provide a valid metersPerUnit conversion."
+                )
             # Sanitize the label derived from the depth raster so it can be used
             # safely as part of an in-memory dataset name.  The in-memory
             # workspace does not allow dataset names with extensions, and any
@@ -568,32 +573,51 @@ class AgFloodDamageEstimator(object):
                 .replace(" ", "_")
                 .replace(".", "_")
             )
-            aligned = os.path.join(out_dir, f"{label}_aligned.tif")
-            clipped = os.path.join(out_dir, f"{label}_clipped.tif")
+            crop_proj = os.path.join("in_memory", f"{label}_crop_proj")
+            crop_clip = os.path.join("in_memory", f"{label}_crop")
+            depth_clip = os.path.join("in_memory", f"{label}_depth")
 
-            arcpy.env.snapRaster = crop_ras
-            arcpy.env.cellSize = crop_ras
+            crop_arr = None
+            depth_arr = None
+            cell_area_acres = None
+            clip_width = None
+            clip_height = None
+            inter = None
 
-            arcpy.management.ProjectRaster(
-                depth_str,
-                aligned,
-                crop_ras.spatialReference,
-                "NEAREST",
-                crop_ras.meanCellWidth,
-            )
+            with arcpy.EnvManager(snapRaster=depth_str, cellSize=depth_str):
+                arcpy.management.ProjectRaster(
+                    crop_path,
+                    crop_proj,
+                    depth_sr,
+                    "NEAREST",
+                    depth_desc.meanCellWidth,
+                )
 
-            aligned_desc = arcpy.Describe(aligned)
-            inter = intersect_extent(aligned_desc.extent, crop_ras.extent)
+                crop_proj_desc = arcpy.Describe(crop_proj)
+                inter = intersect_extent(crop_proj_desc.extent, depth_desc.extent)
             if not inter:
                 raise ValueError(f"Depth raster {depth_str} does not overlap crop raster extent")
             extent_str = f"{inter[0]} {inter[1]} {inter[2]} {inter[3]}"
 
-            crop_clip = os.path.join("in_memory", f"{label}_crop")
-            arcpy.management.Clip(crop_path, extent_str, crop_clip, "#", "0", "NONE", "MAINTAIN_EXTENT")
-            arcpy.management.Clip(aligned, extent_str, clipped, "#", "0", "NONE", "MAINTAIN_EXTENT")
-            crop_arr = arcpy.RasterToNumPyArray(crop_clip)
-            depth_arr = arcpy.RasterToNumPyArray(clipped)
-            arcpy.management.Delete(crop_clip)
+            with arcpy.EnvManager(snapRaster=depth_str, cellSize=depth_str):
+                arcpy.management.Clip(crop_proj, extent_str, crop_clip, "#", "0", "NONE", "MAINTAIN_EXTENT")
+                arcpy.management.Clip(depth_str, extent_str, depth_clip, "#", "0", "NONE", "MAINTAIN_EXTENT")
+                crop_arr = arcpy.RasterToNumPyArray(crop_clip)
+                depth_arr = arcpy.RasterToNumPyArray(depth_clip)
+                depth_clip_desc = arcpy.Describe(depth_clip)
+                clip_width = abs(depth_clip_desc.meanCellWidth)
+                clip_height = abs(depth_clip_desc.meanCellHeight)
+                cell_area_acres = (
+                    clip_width * clip_height * meters_per_unit ** 2 / 4046.8564224
+                )
+
+            for ds in (crop_proj, crop_clip, depth_clip):
+                if arcpy.Exists(ds):
+                    arcpy.management.Delete(ds)
+            if cell_area_acres is None:
+                raise RuntimeError(
+                    f"Failed to compute cell area for depth raster {depth_str}."
+                )
             if depth_arr.shape != crop_arr.shape:
                 raise ValueError(
                     f"Masked depth raster {label} shape does not match crop raster. "
@@ -657,7 +681,8 @@ class AgFloodDamageEstimator(object):
                 rng = np.random.default_rng(rand.randint(0, 2**32 - 1))
                 depth_sim = depth_masked
                 if depth_std > 0:
-                    depth_sim = depth_masked + rng.normal(0, depth_std, size=depth_masked.shape)
+                    depth_offset = rng.normal(0, depth_std)
+                    depth_sim = np.clip(depth_masked + depth_offset, 0, None)
                     depth_sim = np.clip(depth_sim, 0, None)
 
                 frac = np.interp(
@@ -682,7 +707,7 @@ class AgFloodDamageEstimator(object):
 
                 values = val_lookup[crop_masked]
                 if value_std > 0:
-                    values = values * np.clip(1 + rng.normal(0, value_std, size=values.shape), 0, None)
+                    values = np.clip(values + rng.normal(0, value_std, size=values.shape), 0, None)
                 values[~active_mask] = 0
 
                 dmg_vals = frac * values * cell_area_acres
@@ -696,8 +721,8 @@ class AgFloodDamageEstimator(object):
             if out_points:
                 damage_avg = damage_accum / total_runs
                 xmin, ymin, xmax, ymax = inter
-                cw = crop_ras.meanCellWidth
-                ch = crop_ras.meanCellHeight
+                cw = clip_width
+                ch = clip_height
                 x0 = xmin + cw / 2
                 y0 = ymax - ch / 2
                 for i in range(depth_arr.shape[0]):
