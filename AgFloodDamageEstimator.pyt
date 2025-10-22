@@ -784,6 +784,45 @@ class AgFloodDamageEstimator(object):
                 active[m] = np.array([], dtype=np.int64)
         return active
 
+    @staticmethod
+    def _temporary_raster_workspace(config: SimulationConfig) -> str:
+        """Select a disk-backed workspace for intermediate rasters.
+
+        Using the in-memory workspace can trigger out-of-memory errors when
+        large rasters are projected. Prefer any scratch workspace configured in
+        the current ArcPy environment and fall back to the output directory when
+        necessary so the intermediate rasters are written to disk instead of
+        memory.
+        """
+
+        candidates = [
+            getattr(arcpy.env, "scratchWorkspace", None),
+            getattr(arcpy.env, "scratchGDB", None),
+            getattr(arcpy.env, "scratchFolder", None),
+            config.out_dir,
+        ]
+        for workspace in candidates:
+            if not workspace:
+                continue
+            workspace_str = str(workspace)
+            if workspace_str.lower() == "in_memory":
+                continue
+            try:
+                if arcpy.Exists(workspace_str):
+                    return workspace_str
+            except Exception:
+                # Fall back to returning the path even if Exists fails so the
+                # caller still has a usable location.
+                return workspace_str
+        return config.out_dir
+
+    @staticmethod
+    def _make_temp_raster_path(workspace: str, label: str, suffix: str) -> str:
+        base_name = f"{label}_{suffix}"
+        use_gdb = workspace.lower().endswith(".gdb")
+        name = base_name if use_gdb else f"{base_name}.tif"
+        return arcpy.CreateUniqueName(name, workspace)
+
     def _simulate_event(
         self,
         config: SimulationConfig,
@@ -803,9 +842,10 @@ class AgFloodDamageEstimator(object):
             )
 
         label = self._sanitize_label(event.path)
-        crop_proj = os.path.join("in_memory", f"{label}_crop_proj")
-        crop_clip = os.path.join("in_memory", f"{label}_crop")
-        depth_clip = os.path.join("in_memory", f"{label}_depth")
+        temp_workspace = self._temporary_raster_workspace(config)
+        crop_proj = self._make_temp_raster_path(temp_workspace, label, "crop_proj")
+        crop_clip = self._make_temp_raster_path(temp_workspace, label, "crop")
+        depth_clip = self._make_temp_raster_path(temp_workspace, label, "depth")
         temp_datasets = [crop_proj, crop_clip, depth_clip]
 
         crop_arr = None
