@@ -1407,3 +1407,51 @@ class AgFloodDamageEstimator(object):
             with arcpy.da.InsertCursor(out_points, ["SHAPE@XY", "Crop", "LandCover", "Damage", "Event", "RP"]) as cursor:
                 for x, y, crop_code, landcover, damage, label, rp in points:
                     cursor.insertRow([(x, y), crop_code, landcover, damage, label, rp])
+
+            layer = None
+            try:
+                make_result = arcpy.management.MakeFeatureLayer(out_points, "damage_points_layer")
+                layer = make_result.getOutput(0)
+                try:
+                    layer.definitionQuery = '"Damage" > 0'
+                    messages.addMessage("Applied display filter to hide points with zero damage.")
+                except Exception as exc:
+                    messages.addWarningMessage(f"Unable to apply damage visibility filter: {exc}")
+                try:
+                    sym = layer.symbology
+                    sym.updateRenderer("UniqueValueRenderer")
+                    sym.renderer.fields = ["LandCover"]
+                    try:
+                        import arcpy.mp  # type: ignore
+
+                        project = arcpy.mp.ArcGISProject("CURRENT")
+                        ramps = project.listColorRamps("Random") or project.listColorRamps()
+                        if ramps:
+                            sym.renderer.colorRamp = ramps[0]
+                    except Exception:
+                        # Color ramp selection is best-effort; fall back to default colors on failure.
+                        pass
+                    layer.symbology = sym
+                except Exception as exc:
+                    messages.addWarningMessage(f"Unable to apply land cover symbology: {exc}")
+            except Exception as exc:
+                messages.addWarningMessage(f"Unable to prepare damage points layer: {exc}")
+
+            if layer is not None:
+                try:
+                    base_name = os.path.splitext(os.path.basename(out_points))[0]
+                    layer_file = os.path.join(config.out_dir, f"{base_name}.lyrx")
+                    if arcpy.Exists(layer_file):
+                        arcpy.management.Delete(layer_file)
+                    arcpy.management.SaveToLayerFile(layer, layer_file, "RELATIVE")
+                    messages.addMessage(f"Saved damage points layer file with symbology: {layer_file}")
+                except Exception as exc:
+                    messages.addWarningMessage(f"Unable to save layer file for damage points: {exc}")
+
+            try:
+                if layer is not None:
+                    arcpy.SetParameter(21, layer)
+                else:
+                    arcpy.SetParameterAsText(21, out_points)
+            except Exception:
+                pass
