@@ -1413,11 +1413,6 @@ class AgFloodDamageEstimator(object):
                 make_result = arcpy.management.MakeFeatureLayer(out_points, "damage_points_layer")
                 layer = make_result.getOutput(0)
                 try:
-                    layer.definitionQuery = '"Damage" > 0'
-                    messages.addMessage("Applied display filter to hide points with zero damage.")
-                except Exception as exc:
-                    messages.addWarningMessage(f"Unable to apply damage visibility filter: {exc}")
-                try:
                     sym = layer.symbology
                     sym.updateRenderer("UniqueValueRenderer")
                     sym.renderer.fields = ["LandCover"]
