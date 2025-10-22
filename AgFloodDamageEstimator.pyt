@@ -208,6 +208,8 @@ class EventSpec:
     path: str
     month: int
     return_period: float
+    uniform_depth: Optional[float] = None
+    label: Optional[str] = None
 
 
 @dataclass
@@ -247,7 +249,9 @@ class Toolbox(object):
 class AgFloodDamageEstimator(object):
     def __init__(self):
         self.label = "Estimate Agricultural Flood Damage"
-        self.description = "Estimate flood damage to crops using depth raster and crop raster"
+        self.description = (
+            "Estimate flood damage to crops using depth rasters or uniform-depth polygons together with a crop raster"
+        )
         self.canRunInBackground = False
 
     def getParameterInfo(self):
@@ -343,13 +347,41 @@ class AgFloodDamageEstimator(object):
             "Provide a crop code, its depth-damage curve, and an optional list of growing season months "
             "formatted like '0:0,1:0.5,2:1' and '6,7,8'. Listed codes override the default curve and months."
         )
-        event_info = arcpy.Parameter(displayName="Event Information", name="event_info", datatype="Value Table",
-                                     parameterType="Required", direction="Input")
-        event_info.columns = [["Raster Layer", "Raster"], ["GPLong", "Month (1-12)"], ["GPLong", "Return Period (years)"]]
-        event_info.value = [["", 6, 100]]
+        event_info = arcpy.Parameter(
+            displayName="Depth Raster Events",
+            name="event_info",
+            datatype="Value Table",
+            parameterType="Optional",
+            direction="Input",
+        )
+        event_info.columns = [
+            ["Raster Layer", "Raster"],
+            ["GPLong", "Month (1-12)"],
+            ["GPLong", "Return Period (years)"],
+        ]
         event_info.description = (
             "Table of flood events with depth rasters, flood month, and return period. "
             "Adding or modifying rows changes which scenarios are modeled and their frequency, influencing total expected damage."
+        )
+
+        uniform_events = arcpy.Parameter(
+            displayName="Uniform Depth Polygon Events",
+            name="uniform_events",
+            datatype="Value Table",
+            parameterType="Optional",
+            direction="Input",
+        )
+        uniform_events.columns = [
+            ["Feature Layer", "Polygon"],
+            ["GPDouble", "Depth (ft)"],
+            ["GPLong", "Month (1-12)"],
+            ["GPLong", "Return Period (years)"],
+            ["GPString", "Label"],
+        ]
+        uniform_events.description = (
+            "Optional table of polygon flood extents with a uniform depth. "
+            "These rows are useful when depth rasters are unavailable; all cropland inside the polygon "
+            "will use the provided depth when calculating damages."
         )
 
         mode = arcpy.Parameter(
@@ -509,6 +541,7 @@ class AgFloodDamageEstimator(object):
             curve,
             specific_curve,
             event_info,
+            uniform_events,
             mode,
             stddev,
             mc,
@@ -521,6 +554,41 @@ class AgFloodDamageEstimator(object):
             analysis,
             pts,
         ]
+
+    def updateParameters(self, parameters):
+        if len(parameters) < 22:
+            return
+
+        mode_param = parameters[11]
+        mode_value = mode_param.valueAsText if mode_param else None
+        deterministic = mode_value == "Single Run"
+
+        toggle_indices = {
+            12: not deterministic,
+            13: not deterministic,
+            14: not deterministic,
+            15: not deterministic,
+            16: not deterministic,
+            18: not deterministic,
+            19: not deterministic,
+        }
+
+        for idx, enabled in toggle_indices.items():
+            if idx < len(parameters):
+                parameters[idx].enabled = enabled
+
+        random_season = False
+        if not deterministic and 16 < len(parameters):
+            season_param = parameters[16]
+            random_season = bool(season_param.value) if season_param.value is not None else False
+        if 17 < len(parameters):
+            parameters[17].enabled = (not deterministic) and random_season
+
+        if deterministic:
+            if 15 < len(parameters) and parameters[15].value:
+                parameters[15].value = False
+            if 16 < len(parameters) and parameters[16].value:
+                parameters[16].value = False
 
     def execute(self, params, messages):
         config = self._collect_config(params)
@@ -547,18 +615,19 @@ class AgFloodDamageEstimator(object):
         fall_str = params[6].value
         curve_str = params[7].value
         specific_table = params[8].values if params[8].values else []
-        event_table = params[9].values
-        simulation_mode = params[10].valueAsText or "Monte Carlo"
-        frac_std = float(params[11].value)
-        runs = int(params[12].value)
-        random = Random(int(params[13].value))
-        random_month = bool(params[14].value) if params[14].value is not None else False
-        random_season = bool(params[15].value) if params[15].value is not None else False
-        season_prob_table = params[16].values if params[16].values else []
-        depth_std = float(params[17].value) if params[17].value is not None else 0.0
-        value_std = float(params[18].value) if params[18].value is not None else 0.0
-        analysis_years = int(params[19].value) if params[19].value is not None else 1
-        out_points = params[20].valueAsText if params[20].value else None
+        event_table = params[9].values if params[9].values else []
+        uniform_table = params[10].values if params[10].values else []
+        simulation_mode = params[11].valueAsText or "Monte Carlo"
+        frac_std = float(params[12].value)
+        runs = int(params[13].value)
+        random = Random(int(params[14].value))
+        random_month = bool(params[15].value) if params[15].value is not None else False
+        random_season = bool(params[16].value) if params[16].value is not None else False
+        season_prob_table = params[17].values if params[17].values else []
+        depth_std = float(params[18].value) if params[18].value is not None else 0.0
+        value_std = float(params[19].value) if params[19].value is not None else 0.0
+        analysis_years = int(params[20].value) if params[20].value is not None else 1
+        out_points = params[21].valueAsText if params[21].value else None
 
         os.makedirs(out_dir, exist_ok=True)
 
@@ -615,6 +684,7 @@ class AgFloodDamageEstimator(object):
         )
 
         events = self._parse_events(event_table)
+        events.extend(self._parse_uniform_events(uniform_table))
 
         return SimulationConfig(
             crop_path=crop_path,
@@ -730,14 +800,48 @@ class AgFloodDamageEstimator(object):
             rp = float(rp)
             if rp <= 0:
                 raise ValueError(f"Return period {rp} must be greater than zero.")
-            depth_str = self._normalize_raster_path(depth_path)
+            depth_str = self._normalize_dataset_path(depth_path)
             if not depth_str:
                 continue
             events.append(EventSpec(depth_str, month, rp))
         return events
 
+    def _parse_uniform_events(self, uniform_table: Iterable[Sequence]) -> List[EventSpec]:
+        events: List[EventSpec] = []
+        for row in uniform_table:
+            if len(row) < 4:
+                continue
+            feature_path, depth, month, rp, *label_parts = row
+            if feature_path in (None, ""):
+                continue
+            if depth is None:
+                raise ValueError("Uniform depth is required for polygon events.")
+            month = int(month) if month is not None else None
+            if month is None:
+                raise ValueError("Flood month is required for each polygon event.")
+            if not 1 <= month <= 12:
+                raise ValueError(f"Flood month {month} must be between 1 and 12.")
+            if rp is None:
+                raise ValueError("Return period is required for each polygon event.")
+            rp = float(rp)
+            if rp <= 0:
+                raise ValueError(f"Return period {rp} must be greater than zero.")
+            depth_val = float(depth)
+            if depth_val < 0:
+                raise ValueError("Uniform depth must be zero or positive.")
+            dataset_path = self._normalize_dataset_path(feature_path)
+            if not dataset_path:
+                continue
+            label = None
+            if label_parts:
+                raw_label = label_parts[0]
+                if raw_label not in (None, ""):
+                    label = str(raw_label)
+            events.append(EventSpec(dataset_path, month, rp, uniform_depth=depth_val, label=label))
+        return events
+
     @staticmethod
-    def _normalize_raster_path(path) -> str:
+    def _normalize_dataset_path(path) -> str:
         if hasattr(path, "valueAsText"):
             return path.valueAsText
         if hasattr(path, "dataSource"):
@@ -851,25 +955,13 @@ class AgFloodDamageEstimator(object):
         config: SimulationConfig,
         event: EventSpec,
     ) -> Tuple[List[Dict[str, object]], List[Tuple[float, float, int, str, float, str, float]]]:
-        depth_desc = arcpy.Describe(event.path)
-        depth_sr = getattr(depth_desc, "spatialReference", None)
-        if not depth_sr or getattr(depth_sr, "type", "") != "Projected":
-            raise ValueError(
-                f"Depth raster {event.path} must use a projected coordinate system with linear units"
-                " in meters or feet so acreage can be computed reliably."
-            )
-        meters_per_unit = depth_sr.metersPerUnit
-        if meters_per_unit in (None, 0):
-            raise ValueError(
-                f"Depth raster {event.path} spatial reference does not provide a valid metersPerUnit conversion."
-            )
-
-        label = self._sanitize_label(event.path)
+        label = event.label or self._sanitize_label(event.path)
+        label = str(label)
+        dataset_label = self._sanitize_label(label)
         temp_workspace, cleanup_dir = self._temporary_raster_workspace(config)
-        crop_proj = self._make_temp_raster_path(temp_workspace, label, "crop_proj")
-        crop_clip = self._make_temp_raster_path(temp_workspace, label, "crop")
-        depth_clip = self._make_temp_raster_path(temp_workspace, label, "depth")
-        temp_datasets = [crop_proj, crop_clip, depth_clip]
+        crop_proj = self._make_temp_raster_path(temp_workspace, dataset_label, "crop_proj")
+        crop_clip = self._make_temp_raster_path(temp_workspace, dataset_label, "crop")
+        temp_datasets = [crop_proj, crop_clip]
 
         crop_arr = None
         depth_arr = None
@@ -877,35 +969,117 @@ class AgFloodDamageEstimator(object):
         clip_height = None
         inter = None
         cell_area_acres = None
+        meters_per_unit = None
 
         try:
-            with arcpy.EnvManager(snapRaster=event.path, cellSize=event.path):
-                arcpy.management.ProjectRaster(
-                    config.crop_path,
-                    crop_proj,
-                    depth_sr,
-                    "NEAREST",
-                    depth_desc.meanCellWidth,
-                )
-                crop_proj_desc = arcpy.Describe(crop_proj)
-                inter = intersect_extent(crop_proj_desc.extent, depth_desc.extent)
-            if not inter:
-                raise ValueError(f"Depth raster {event.path} does not overlap crop raster extent")
+            if event.uniform_depth is not None:
+                feature_desc = arcpy.Describe(event.path)
+                feature_sr = getattr(feature_desc, "spatialReference", None)
+                if not feature_sr or getattr(feature_sr, "type", "") != "Projected":
+                    raise ValueError(
+                        f"Polygon dataset {event.path} must use a projected coordinate system with linear units"
+                        " in meters or feet so acreage can be computed reliably."
+                    )
+                meters_per_unit = getattr(feature_sr, "metersPerUnit", None)
+                if meters_per_unit in (None, 0):
+                    raise ValueError(
+                        f"Polygon dataset {event.path} spatial reference does not provide a valid metersPerUnit conversion."
+                    )
 
-            extent_str = f"{inter[0]} {inter[1]} {inter[2]} {inter[3]}"
+                crop_source_desc = arcpy.Describe(config.crop_path)
+                cell_width = getattr(crop_source_desc, "meanCellWidth", None)
+                if cell_width in (None, 0):
+                    cell_width = getattr(crop_source_desc, "meanCellHeight", None)
+                if cell_width in (None, 0):
+                    raise ValueError("Crop raster must provide a valid cell size for projection.")
+                with arcpy.EnvManager(snapRaster=config.crop_path, cellSize=config.crop_path):
+                    arcpy.management.ProjectRaster(
+                        config.crop_path,
+                        crop_proj,
+                        feature_sr,
+                        "NEAREST",
+                        cell_width,
+                    )
+                    crop_proj_desc = arcpy.Describe(crop_proj)
+                    inter = intersect_extent(crop_proj_desc.extent, feature_desc.extent)
+                if not inter:
+                    raise ValueError(f"Polygon dataset {event.path} does not overlap crop raster extent")
 
-            with arcpy.EnvManager(snapRaster=event.path, cellSize=event.path):
-                arcpy.management.Clip(crop_proj, extent_str, crop_clip, "#", "0", "NONE", "MAINTAIN_EXTENT")
-                arcpy.management.Clip(event.path, extent_str, depth_clip, "#", "0", "NONE", "MAINTAIN_EXTENT")
-                crop_arr = arcpy.RasterToNumPyArray(crop_clip)
-                depth_arr = arcpy.RasterToNumPyArray(depth_clip)
-                depth_clip_desc = arcpy.Describe(depth_clip)
-                clip_width = abs(depth_clip_desc.meanCellWidth)
-                clip_height = abs(depth_clip_desc.meanCellHeight)
-                cell_area_acres = clip_width * clip_height * meters_per_unit ** 2 / 4046.8564224
+                extent_str = f"{inter[0]} {inter[1]} {inter[2]} {inter[3]}"
+
+                with arcpy.EnvManager(snapRaster=crop_proj, cellSize=crop_proj):
+                    arcpy.management.Clip(
+                        crop_proj,
+                        extent_str,
+                        crop_clip,
+                        event.path,
+                        "0",
+                        "ClippingGeometry",
+                        "MAINTAIN_EXTENT",
+                    )
+                    crop_arr = arcpy.RasterToNumPyArray(crop_clip)
+                    crop_clip_desc = arcpy.Describe(crop_clip)
+                    clip_width = abs(crop_clip_desc.meanCellWidth)
+                    clip_height = abs(crop_clip_desc.meanCellHeight)
+                    cell_area_acres = clip_width * clip_height * meters_per_unit ** 2 / 4046.8564224
+                    clip_extent = crop_clip_desc.extent
+                    inter = (
+                        clip_extent.XMin,
+                        clip_extent.YMin,
+                        clip_extent.XMax,
+                        clip_extent.YMax,
+                    )
+                depth_arr = np.where(crop_arr > 0, float(event.uniform_depth), 0.0)
+            else:
+                depth_clip = self._make_temp_raster_path(temp_workspace, dataset_label, "depth")
+                temp_datasets.append(depth_clip)
+                depth_desc = arcpy.Describe(event.path)
+                depth_sr = getattr(depth_desc, "spatialReference", None)
+                if not depth_sr or getattr(depth_sr, "type", "") != "Projected":
+                    raise ValueError(
+                        f"Depth raster {event.path} must use a projected coordinate system with linear units"
+                        " in meters or feet so acreage can be computed reliably."
+                    )
+                meters_per_unit = depth_sr.metersPerUnit
+                if meters_per_unit in (None, 0):
+                    raise ValueError(
+                        f"Depth raster {event.path} spatial reference does not provide a valid metersPerUnit conversion."
+                    )
+
+                with arcpy.EnvManager(snapRaster=event.path, cellSize=event.path):
+                    arcpy.management.ProjectRaster(
+                        config.crop_path,
+                        crop_proj,
+                        depth_sr,
+                        "NEAREST",
+                        depth_desc.meanCellWidth,
+                    )
+                    crop_proj_desc = arcpy.Describe(crop_proj)
+                    inter = intersect_extent(crop_proj_desc.extent, depth_desc.extent)
+                if not inter:
+                    raise ValueError(f"Depth raster {event.path} does not overlap crop raster extent")
+
+                extent_str = f"{inter[0]} {inter[1]} {inter[2]} {inter[3]}"
+
+                with arcpy.EnvManager(snapRaster=event.path, cellSize=event.path):
+                    arcpy.management.Clip(crop_proj, extent_str, crop_clip, "#", "0", "NONE", "MAINTAIN_EXTENT")
+                    arcpy.management.Clip(event.path, extent_str, depth_clip, "#", "0", "NONE", "MAINTAIN_EXTENT")
+                    crop_arr = arcpy.RasterToNumPyArray(crop_clip)
+                    depth_arr = arcpy.RasterToNumPyArray(depth_clip)
+                    depth_clip_desc = arcpy.Describe(depth_clip)
+                    clip_width = abs(depth_clip_desc.meanCellWidth)
+                    clip_height = abs(depth_clip_desc.meanCellHeight)
+                    cell_area_acres = clip_width * clip_height * meters_per_unit ** 2 / 4046.8564224
+                    clip_extent = depth_clip_desc.extent
+                    inter = (
+                        clip_extent.XMin,
+                        clip_extent.YMin,
+                        clip_extent.XMax,
+                        clip_extent.YMax,
+                    )
         finally:
             for ds in temp_datasets:
-                if arcpy.Exists(ds):
+                if ds and arcpy.Exists(ds):
                     arcpy.management.Delete(ds)
             if cleanup_dir:
                 try:
