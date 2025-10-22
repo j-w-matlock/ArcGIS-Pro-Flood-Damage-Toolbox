@@ -1,10 +1,12 @@
 import arcpy
 import os
+from dataclasses import dataclass
+from random import Random
+from typing import Dict, FrozenSet, Iterable, List, Optional, Sequence, Tuple
+
 import numpy as np
 import pandas as pd
 from openpyxl.chart import BarChart, Reference
-
-from random import Random
 
 
 # Crop code definitions with default value per acre
@@ -190,6 +192,49 @@ def intersect_extent(ext1, ext2):
     if xmin >= xmax or ymin >= ymax:
         return None
     return xmin, ymin, xmax, ymax
+
+
+@dataclass(frozen=True)
+class DamageCurve:
+    depths: np.ndarray
+    fractions: np.ndarray
+    months: Optional[FrozenSet[int]] = None
+
+
+@dataclass(frozen=True)
+class EventSpec:
+    path: str
+    month: int
+    return_period: float
+
+
+@dataclass
+class SimulationConfig:
+    crop_path: str
+    crop_sr: object
+    out_dir: str
+    default_value: float
+    base_curve: DamageCurve
+    specific_curves: Dict[int, DamageCurve]
+    events: List[EventSpec]
+    deterministic: bool
+    runs: int
+    analysis_years: int
+    frac_std: float
+    depth_std: float
+    value_std: float
+    random: Random
+    random_month: bool
+    random_season: bool
+    season_lookup: Dict[str, Optional[FrozenSet[int]]]
+    season_names: Sequence[str]
+    season_weights: Sequence[float]
+    season_months: Optional[FrozenSet[int]]
+    out_points: Optional[str]
+
+    @property
+    def total_runs(self) -> int:
+        return self.runs * self.analysis_years
 
 class Toolbox(object):
     def __init__(self):
@@ -476,6 +521,21 @@ class AgFloodDamageEstimator(object):
         ]
 
     def execute(self, params, messages):
+        config = self._collect_config(params)
+        results: List[Dict[str, object]] = []
+        points: List[Tuple[float, float, int, str, float, str, float]] = []
+
+        for event in config.events:
+            event_results, event_points = self._simulate_event(config, event)
+            results.extend(event_results)
+            points.extend(event_points)
+
+        if not results:
+            raise ValueError("No valid events provided")
+
+        self._write_outputs(config, results, points, messages)
+
+    def _collect_config(self, params) -> SimulationConfig:
         crop_path = params[0].valueAsText
         out_dir = params[1].valueAsText
         value_acre = float(params[2].value)
@@ -489,7 +549,7 @@ class AgFloodDamageEstimator(object):
         simulation_mode = params[10].valueAsText or "Monte Carlo"
         frac_std = float(params[11].value)
         runs = int(params[12].value)
-        rand = Random(int(params[13].value))
+        random = Random(int(params[13].value))
         random_month = bool(params[14].value) if params[14].value is not None else False
         random_season = bool(params[15].value) if params[15].value is not None else False
         season_prob_table = params[16].values if params[16].values else []
@@ -515,80 +575,148 @@ class AgFloodDamageEstimator(object):
         if analysis_years < 1:
             raise ValueError("Analysis period must be at least one year.")
 
-        simulation_mode = simulation_mode or "Monte Carlo"
-        deterministic_mode = simulation_mode == "Single Run"
-
-        if deterministic_mode:
+        deterministic = simulation_mode == "Single Run"
+        if deterministic:
             runs = 1
             frac_std = 0.0
             depth_std = 0.0
             value_std = 0.0
             random_month = False
             random_season = False
-        else:
-            if runs < 1:
-                raise ValueError("Monte Carlo simulations must be at least 1.")
+        elif runs < 1:
+            raise ValueError("Monte Carlo simulations must be at least 1.")
 
-        damage_curve_pts = parse_curve(curve_str)
-        curve_depths = np.array([d for d, _ in damage_curve_pts], dtype=float)
-        curve_fracs = np.array([f for _, f in damage_curve_pts], dtype=float)
-        specific_curves = {}
+        base_curve_pts = parse_curve(curve_str)
+        base_curve = DamageCurve(
+            depths=np.array([d for d, _ in base_curve_pts], dtype=float),
+            fractions=np.array([f for _, f in base_curve_pts], dtype=float),
+        )
+
+        specific_curves = self._parse_specific_curves(specific_table)
+
+        crop_desc = arcpy.Describe(crop_path)
+        crop_sr = getattr(crop_desc, "spatialReference", None)
+        if not crop_sr or crop_sr.name in (None, ""):
+            raise ValueError("Crop raster must have a defined spatial reference.")
+
+        (
+            season_lookup,
+            season_months,
+            season_names,
+            season_weights,
+        ) = self._build_season_config(
+            winter_str,
+            spring_str,
+            summer_str,
+            fall_str,
+            season_prob_table,
+        )
+
+        events = self._parse_events(event_table)
+
+        return SimulationConfig(
+            crop_path=crop_path,
+            crop_sr=crop_sr,
+            out_dir=out_dir,
+            default_value=value_acre,
+            base_curve=base_curve,
+            specific_curves=specific_curves,
+            events=events,
+            deterministic=deterministic,
+            runs=runs,
+            analysis_years=analysis_years,
+            frac_std=frac_std,
+            depth_std=depth_std,
+            value_std=value_std,
+            random=random,
+            random_month=random_month,
+            random_season=random_season,
+            season_lookup=season_lookup,
+            season_names=season_names,
+            season_weights=season_weights,
+            season_months=season_months,
+            out_points=out_points,
+        )
+
+    def _parse_specific_curves(self, specific_table: Iterable[Sequence]) -> Dict[int, DamageCurve]:
+        curves: Dict[int, DamageCurve] = {}
         for row in specific_table:
             if len(row) < 2:
                 continue
             code = row[0]
             curve_txt = row[1]
             grow_txt = row[2] if len(row) > 2 else None
-            if curve_txt:
-                pts = parse_curve(curve_txt)
-                months = parse_months(grow_txt)
-                specific_curves[int(code)] = (
-                    np.array([d for d, _ in pts], dtype=float),
-                    np.array([f for _, f in pts], dtype=float),
-                    months,
-                )
-        crop_desc = arcpy.Describe(crop_path)
-        crop_sr = getattr(crop_desc, "spatialReference", None)
-        if not crop_sr or crop_sr.name in (None, ""):
-            raise ValueError("Crop raster must have a defined spatial reference.")
+            if not curve_txt:
+                continue
+            pts = parse_curve(curve_txt)
+            months = parse_months(grow_txt)
+            curves[int(code)] = DamageCurve(
+                depths=np.array([d for d, _ in pts], dtype=float),
+                fractions=np.array([f for _, f in pts], dtype=float),
+                months=frozenset(months) if months else None,
+            )
+        return curves
 
-        # Growing season months for each season
-        winter_months = parse_months(winter_str)
-        spring_months = parse_months(spring_str)
-        summer_months = parse_months(summer_str)
-        fall_months = parse_months(fall_str)
-        season_lookup = {
+    def _build_season_config(
+        self,
+        winter_str: Optional[str],
+        spring_str: Optional[str],
+        summer_str: Optional[str],
+        fall_str: Optional[str],
+        season_prob_table: Iterable[Sequence],
+    ) -> Tuple[Dict[str, Optional[FrozenSet[int]]], Optional[FrozenSet[int]], Sequence[str], Sequence[float]]:
+        def to_frozen(months: Optional[Iterable[int]]) -> Optional[FrozenSet[int]]:
+            if not months:
+                return None
+            return frozenset(int(m) for m in months)
+
+        winter_months = to_frozen(parse_months(winter_str))
+        spring_months = to_frozen(parse_months(spring_str))
+        summer_months = to_frozen(parse_months(summer_str))
+        fall_months = to_frozen(parse_months(fall_str))
+
+        season_lookup: Dict[str, Optional[FrozenSet[int]]] = {
             "Winter": winter_months,
             "Spring": spring_months,
             "Summer": summer_months,
             "Fall": fall_months,
         }
-        season_months = set()
-        for s in season_lookup.values():
-            if s:
-                season_months.update(s)
-        if not season_months:
-            season_months = None
-        season_prob_dict = {}
-        for s, p in season_prob_table:
-            prob = float(p)
+
+        month_union = set()
+        for months in season_lookup.values():
+            if months:
+                month_union.update(months)
+        season_months = frozenset(month_union) if month_union else None
+
+        season_prob_dict: Dict[str, float] = {}
+        for season, probability in season_prob_table:
+            prob = float(probability)
             if prob < 0:
                 raise ValueError("Season probabilities must be zero or positive.")
-            season_prob_dict[str(s)] = prob
+            season_prob_dict[str(season)] = prob
         if not season_prob_dict:
-            season_prob_dict = {"Winter": 0.25, "Spring": 0.25, "Summer": 0.25, "Fall": 0.25}
-        season_names = list(season_lookup.keys())
-        weights = [season_prob_dict.get(s, 1.0) for s in season_names]
-        total_w = sum(weights)
-        if total_w <= 0:
+            season_prob_dict = {
+                "Winter": 0.25,
+                "Spring": 0.25,
+                "Summer": 0.25,
+                "Fall": 0.25,
+            }
+
+        season_names: List[str] = list(season_lookup.keys())
+        weights = [season_prob_dict.get(name, 1.0) for name in season_names]
+        total = sum(weights)
+        if total <= 0:
             weights = [1.0] * len(season_names)
         else:
-            weights = [w / total_w for w in weights]
+            weights = [w / total for w in weights]
 
-        results = []
-        points = []
+        return season_lookup, season_months, season_names, weights
 
+    def _parse_events(self, event_table: Iterable[Sequence]) -> List[EventSpec]:
+        events: List[EventSpec] = []
         for row in event_table:
+            if len(row) < 3:
+                continue
             depth_path, month, rp = row
             if month is None:
                 raise ValueError("Flood month is required for each event.")
@@ -600,281 +728,312 @@ class AgFloodDamageEstimator(object):
             rp = float(rp)
             if rp <= 0:
                 raise ValueError(f"Return period {rp} must be greater than zero.")
-            depth_str = (
-                depth_path.valueAsText
-                if hasattr(depth_path, "valueAsText")
-                else depth_path.dataSource
-                if hasattr(depth_path, "dataSource")
-                else str(depth_path)
-            )
+            depth_str = self._normalize_raster_path(depth_path)
             if not depth_str:
                 continue
-            depth_desc = arcpy.Describe(depth_str)
-            depth_sr = getattr(depth_desc, "spatialReference", None)
-            if not depth_sr or getattr(depth_sr, "type", "") != "Projected":
-                raise ValueError(
-                    f"Depth raster {depth_str} must use a projected coordinate system with linear units"
-                    " in meters or feet so acreage can be computed reliably."
-                )
-            meters_per_unit = depth_sr.metersPerUnit
-            if meters_per_unit in (None, 0):
-                raise ValueError(
-                    f"Depth raster {depth_str} spatial reference does not provide a valid metersPerUnit conversion."
-                )
-            # Sanitize the label derived from the depth raster so it can be used
-            # safely as part of an in-memory dataset name.  The in-memory
-            # workspace does not allow dataset names with extensions, and any
-            # periods in the base filename are interpreted as extensions.  This
-            # replaces spaces and periods with underscores to ensure a valid
-            # name such as "event_1_crop".
-            label = (
-                os.path.splitext(os.path.basename(depth_str))[0]
-                .replace(" ", "_")
-                .replace(".", "_")
+            events.append(EventSpec(depth_str, month, rp))
+        return events
+
+    @staticmethod
+    def _normalize_raster_path(path) -> str:
+        if hasattr(path, "valueAsText"):
+            return path.valueAsText
+        if hasattr(path, "dataSource"):
+            return path.dataSource
+        return str(path)
+
+    @staticmethod
+    def _sanitize_label(path: str) -> str:
+        base = os.path.splitext(os.path.basename(path))[0]
+        return base.replace(" ", "_").replace(".", "_")
+
+    def _select_month(self, config: SimulationConfig, default_month: int) -> int:
+        if config.random_season:
+            season = config.random.choices(config.season_names, weights=config.season_weights)[0]
+            months = config.season_lookup.get(season)
+            if months:
+                return config.random.choice(list(months))
+            return config.random.randint(1, 12)
+        if config.random_month:
+            return config.random.randint(1, 12)
+        return default_month
+
+    @staticmethod
+    def _compute_active_indices(
+        code_indices: Dict[int, np.ndarray],
+        code_months: Dict[int, Optional[FrozenSet[int]]],
+    ) -> Optional[Dict[int, np.ndarray]]:
+        if not code_indices:
+            return None
+        if not any(months is not None for months in code_months.values()):
+            return None
+        lists: Dict[int, List[np.ndarray]] = {m: [] for m in range(1, 13)}
+        for code, indices in code_indices.items():
+            months = code_months.get(code)
+            if months is None:
+                for m in range(1, 13):
+                    lists[m].append(indices)
+            else:
+                for m in months:
+                    lists[int(m)].append(indices)
+        active: Dict[int, np.ndarray] = {}
+        for m in range(1, 13):
+            if lists[m]:
+                active[m] = np.concatenate(lists[m])
+            else:
+                active[m] = np.array([], dtype=np.int64)
+        return active
+
+    def _simulate_event(
+        self,
+        config: SimulationConfig,
+        event: EventSpec,
+    ) -> Tuple[List[Dict[str, object]], List[Tuple[float, float, int, str, float, str, float]]]:
+        depth_desc = arcpy.Describe(event.path)
+        depth_sr = getattr(depth_desc, "spatialReference", None)
+        if not depth_sr or getattr(depth_sr, "type", "") != "Projected":
+            raise ValueError(
+                f"Depth raster {event.path} must use a projected coordinate system with linear units"
+                " in meters or feet so acreage can be computed reliably."
             )
-            crop_proj = os.path.join("in_memory", f"{label}_crop_proj")
-            crop_clip = os.path.join("in_memory", f"{label}_crop")
-            depth_clip = os.path.join("in_memory", f"{label}_depth")
+        meters_per_unit = depth_sr.metersPerUnit
+        if meters_per_unit in (None, 0):
+            raise ValueError(
+                f"Depth raster {event.path} spatial reference does not provide a valid metersPerUnit conversion."
+            )
 
-            crop_arr = None
-            depth_arr = None
-            cell_area_acres = None
-            clip_width = None
-            clip_height = None
-            inter = None
+        label = self._sanitize_label(event.path)
+        crop_proj = os.path.join("in_memory", f"{label}_crop_proj")
+        crop_clip = os.path.join("in_memory", f"{label}_crop")
+        depth_clip = os.path.join("in_memory", f"{label}_depth")
+        temp_datasets = [crop_proj, crop_clip, depth_clip]
 
-            with arcpy.EnvManager(snapRaster=depth_str, cellSize=depth_str):
+        crop_arr = None
+        depth_arr = None
+        clip_width = None
+        clip_height = None
+        inter = None
+        cell_area_acres = None
+
+        try:
+            with arcpy.EnvManager(snapRaster=event.path, cellSize=event.path):
                 arcpy.management.ProjectRaster(
-                    crop_path,
+                    config.crop_path,
                     crop_proj,
                     depth_sr,
                     "NEAREST",
                     depth_desc.meanCellWidth,
                 )
-
                 crop_proj_desc = arcpy.Describe(crop_proj)
                 inter = intersect_extent(crop_proj_desc.extent, depth_desc.extent)
             if not inter:
-                raise ValueError(f"Depth raster {depth_str} does not overlap crop raster extent")
+                raise ValueError(f"Depth raster {event.path} does not overlap crop raster extent")
+
             extent_str = f"{inter[0]} {inter[1]} {inter[2]} {inter[3]}"
 
-            with arcpy.EnvManager(snapRaster=depth_str, cellSize=depth_str):
+            with arcpy.EnvManager(snapRaster=event.path, cellSize=event.path):
                 arcpy.management.Clip(crop_proj, extent_str, crop_clip, "#", "0", "NONE", "MAINTAIN_EXTENT")
-                arcpy.management.Clip(depth_str, extent_str, depth_clip, "#", "0", "NONE", "MAINTAIN_EXTENT")
+                arcpy.management.Clip(event.path, extent_str, depth_clip, "#", "0", "NONE", "MAINTAIN_EXTENT")
                 crop_arr = arcpy.RasterToNumPyArray(crop_clip)
                 depth_arr = arcpy.RasterToNumPyArray(depth_clip)
                 depth_clip_desc = arcpy.Describe(depth_clip)
                 clip_width = abs(depth_clip_desc.meanCellWidth)
                 clip_height = abs(depth_clip_desc.meanCellHeight)
-                cell_area_acres = (
-                    clip_width * clip_height * meters_per_unit ** 2 / 4046.8564224
-                )
-
-            for ds in (crop_proj, crop_clip, depth_clip):
+                cell_area_acres = clip_width * clip_height * meters_per_unit ** 2 / 4046.8564224
+        finally:
+            for ds in temp_datasets:
                 if arcpy.Exists(ds):
                     arcpy.management.Delete(ds)
-            if cell_area_acres is None:
-                raise RuntimeError(
-                    f"Failed to compute cell area for depth raster {depth_str}."
-                )
-            if depth_arr.shape != crop_arr.shape:
-                raise ValueError(
-                    f"Masked depth raster {label} shape does not match crop raster. "
-                    f"Crop: {crop_arr.shape}, Depth: {depth_arr.shape}"
-                )
 
-            mask = (crop_arr > 0) & (depth_arr > 0)
-            crop_masked = crop_arr[mask].astype(int)
-            depth_masked = depth_arr[mask]
-            crop_codes = np.unique(crop_masked)
+        if cell_area_acres is None:
+            raise RuntimeError(f"Failed to compute cell area for depth raster {event.path}.")
+        if depth_arr is None or crop_arr is None:
+            raise RuntimeError(f"Failed to read raster data for event {event.path}.")
+        if depth_arr.shape != crop_arr.shape:
+            raise ValueError(
+                f"Masked depth raster {label} shape does not match crop raster. "
+                f"Crop: {crop_arr.shape}, Depth: {depth_arr.shape}"
+            )
 
-            if crop_codes.size == 0:
-                continue
+        mask = (crop_arr > 0) & (depth_arr > 0)
+        crop_masked = crop_arr[mask].astype(int)
+        depth_masked = depth_arr[mask]
+        if crop_masked.size == 0:
+            return [], []
 
-            spec_masks = {}
-            for code, (d_arr, f_arr, _) in specific_curves.items():
-                m = crop_masked == code
-                if np.any(m):
-                    spec_masks[code] = m
+        crop_codes = np.unique(crop_masked)
+        max_code = int(crop_codes.max())
+        val_lookup = np.full(max_code + 1, config.default_value, dtype=float)
+        for code, (_, val) in CROP_DEFINITIONS.items():
+            if code <= max_code:
+                val_lookup[code] = val
 
-            max_code = int(crop_codes.max())
-            val_lookup = np.full(max_code + 1, value_acre, dtype=float)
-            for code, (_, val) in CROP_DEFINITIONS.items():
-                if code <= max_code:
-                    val_lookup[code] = val
+        pixel_counts_arr = np.bincount(crop_masked, minlength=max_code + 1)
+        pixel_counts = {int(code): int(pixel_counts_arr[int(code)]) for code in crop_codes}
 
-            pixel_counts_arr = np.bincount(crop_masked, minlength=max_code + 1)
-            pixel_counts = {c: int(pixel_counts_arr[c]) for c in crop_codes}
+        code_indices: Dict[int, np.ndarray] = {int(code): np.where(crop_masked == code)[0] for code in crop_codes}
+        spec_curves = {
+            code: config.specific_curves[code]
+            for code in config.specific_curves
+            if code in code_indices
+        }
 
-            damages_runs = {c: [] for c in crop_codes}
-            damage_accum = np.zeros_like(depth_arr, dtype=float) if out_points else None
+        code_months: Dict[int, Optional[FrozenSet[int]]] = {}
+        for code in code_indices:
+            curve = spec_curves.get(code)
+            if curve and curve.months is not None:
+                code_months[code] = curve.months
+            else:
+                code_months[code] = config.season_months
 
-            # Pre-compute boolean masks for each crop code once so we do not
-            # repeatedly allocate large temporary arrays inside the Monte Carlo
-            # loop.  The previous approach recreated "crop_masked == c" for
-            # every crop on every iteration which becomes extremely slow for
-            # large rasters.  Caching the masks ensures that each simulation
-            # run only toggles already computed masks which dramatically
-            # shortens processing time.
-            crop_code_masks = {c: (crop_masked == c) for c in crop_codes}
+        active_indices_by_month = self._compute_active_indices(code_indices, code_months)
 
-            total_runs = runs * analysis_years
-            for _ in range(total_runs):
-                if random_season:
-                    sel_season = rand.choices(season_names, weights=weights)[0]
-                    months_sel = season_lookup.get(sel_season)
-                    if months_sel:
-                        sim_month = rand.choice(list(months_sel))
-                    else:
-                        sim_month = rand.randint(1, 12)
-                elif random_month:
-                    sim_month = rand.randint(1, 12)
-                else:
-                    sim_month = month
+        damages_runs: Dict[int, List[float]] = {int(code): [] for code in crop_codes}
+        damage_accum = np.zeros_like(depth_arr, dtype=float) if config.out_points else None
 
-                active_mask = np.zeros_like(crop_masked, dtype=bool)
-                for c, base_mask in crop_code_masks.items():
-                    _, _, gm = specific_curves.get(c, (None, None, season_months))
-                    gm = gm if gm is not None else season_months
-                    if gm is None or sim_month in gm:
-                        active_mask |= base_mask
-                if not active_mask.any():
-                    for c in crop_codes:
-                        damages_runs[c].append(0.0)
-                    # When no crops are active in the simulated month the
-                    # remaining Monte Carlo work would only propagate zeros.
-                    # Skip immediately to the next iteration so runs that fall
-                    # completely outside the growing season do not waste time
-                    # on interpolation or random draws.  This restores the
-                    # short-circuit behaviour that prevents apparent hangs when
-                    # large event tables contain many out-of-season months.
+        curve_depths = config.base_curve.depths
+        curve_fracs = config.base_curve.fractions
+        spec_indices = {code: code_indices[code] for code in spec_curves}
+
+        crop_codes_list = [int(code) for code in crop_codes]
+
+        for _ in range(config.total_runs):
+            sim_month = self._select_month(config, event.month)
+
+            active_indices = None
+            if active_indices_by_month is not None:
+                active_indices = active_indices_by_month.get(sim_month, np.array([], dtype=np.int64))
+                if active_indices.size == 0:
+                    for code in crop_codes_list:
+                        damages_runs[code].append(0.0)
                     continue
 
-                rng = None
-                if not deterministic_mode and (depth_std > 0 or frac_std > 0 or value_std > 0):
-                    rng = np.random.default_rng(rand.randint(0, 2**32 - 1))
-                depth_sim = depth_masked
-                if depth_std > 0 and rng is not None:
-                    depth_offset = rng.normal(0, depth_std)
-                    depth_sim = np.clip(depth_masked + depth_offset, 0, None)
-                    depth_sim = np.clip(depth_sim, 0, None)
+            rng = None
+            if not config.deterministic and (
+                config.depth_std > 0 or config.frac_std > 0 or config.value_std > 0
+            ):
+                rng = np.random.default_rng(config.random.randint(0, 2**32 - 1))
 
-                frac = np.interp(
-                    depth_sim,
-                    curve_depths,
-                    curve_fracs,
-                    left=curve_fracs[0],
-                    right=curve_fracs[-1],
-                )
-                for code, m in spec_masks.items():
-                    d_arr, f_arr, _ = specific_curves[code]
-                    frac[m] = np.interp(
-                        depth_sim[m],
-                        d_arr,
-                        f_arr,
-                        left=f_arr[0],
-                        right=f_arr[-1],
-                    )
-                if frac_std > 0 and rng is not None:
-                    frac = frac + rng.normal(0, frac_std, size=frac.shape)
-                    frac = np.clip(frac, 0, 1)
+            depth_sim = depth_masked
+            if rng is not None and config.depth_std > 0:
+                depth_offset = rng.normal(0, config.depth_std)
+                depth_sim = np.clip(depth_masked + depth_offset, 0, None)
 
-                values = val_lookup[crop_masked]
-                if value_std > 0 and rng is not None:
-                    values = np.clip(values + rng.normal(0, value_std, size=values.shape), 0, None)
-                values[~active_mask] = 0
+            frac = np.interp(
+                depth_sim,
+                curve_depths,
+                curve_fracs,
+                left=curve_fracs[0],
+                right=curve_fracs[-1],
+            )
 
-                dmg_vals = frac * values * cell_area_acres
-                dmg_per_crop = np.bincount(crop_masked, weights=dmg_vals, minlength=max_code + 1)
-                for c in crop_codes:
-                    damages_runs[c].append(float(dmg_per_crop[c]))
-
-                if out_points:
-                    damage_accum[mask] += dmg_vals
-
-            if out_points:
-                damage_avg = damage_accum / total_runs
-                xmin, ymin, xmax, ymax = inter
-                cw = clip_width
-                ch = clip_height
-                x0 = xmin + cw / 2
-                y0 = ymax - ch / 2
-
-                # Iterate only over cells that were actually part of the mask
-                # rather than the entire raster extent.  The nested loops over
-                # the full grid previously caused the tool to appear to hang on
-                # larger rasters because it still inspected every pixel even
-                # when most were empty.  Restricting iteration to the masked
-                # cells produces the same output while drastically reducing the
-                # amount of work required.
-                rows, cols = np.nonzero(mask)
-                masked_crops = crop_arr[mask]
-                masked_damages = damage_avg[mask]
-                for row, col, crop_code, dmg in zip(rows, cols, masked_crops, masked_damages):
-                    crop_code = int(crop_code)
-                    landcover = CROP_DEFINITIONS.get(crop_code, ("Unknown", value_acre))[0]
-                    # Clip text fields to the feature class length to avoid
-                    # "insertRow returned NULL" failures when names exceed the
-                    # field size.  Long raster names are common when rasters
-                    # include full scenario descriptions or timestamps.
-                    landcover = str(landcover)[:255]
-                    event_label = str(label)[:255]
-                    points.append(
-                        (
-                            x0 + col * cw,
-                            y0 - row * ch,
-                            crop_code,
-                            landcover,
-                            float(dmg),
-                            event_label,
-                            float(rp),
-                        )
-                    )
-
-            for c in crop_codes:
-                arr = np.array(damages_runs[c], dtype=float)
-                avg_damage = float(arr.mean())
-                std_damage = float(arr.std(ddof=0))
-                p05 = float(np.percentile(arr, 5))
-                p95 = float(np.percentile(arr, 95))
-                name, _ = CROP_DEFINITIONS.get(c, ("Unknown", value_acre))
-                results.append(
-                    {
-                        "Label": label,
-                        "RP": float(rp),
-                        "Crop": int(c),
-                        "LandCover": name,
-                        "Damage": avg_damage,
-                        "StdDev": std_damage,
-                        "P05": p05,
-                        "P95": p95,
-                        "FloodedAcres": pixel_counts[c] * cell_area_acres,
-                        "FloodedPixels": pixel_counts[c],
-                        "ValuePerAcre": float(val_lookup[c]),
-                    }
+            for code, indices in spec_indices.items():
+                spec_curve = spec_curves[code]
+                frac[indices] = np.interp(
+                    depth_sim[indices],
+                    spec_curve.depths,
+                    spec_curve.fractions,
+                    left=spec_curve.fractions[0],
+                    right=spec_curve.fractions[-1],
                 )
 
-        if not results:
-            raise ValueError("No valid events provided")
+            if rng is not None and config.frac_std > 0:
+                frac = np.clip(frac + rng.normal(0, config.frac_std, size=frac.shape), 0, 1)
 
-        # --- EAD calculations ---
+            values = val_lookup[crop_masked]
+            if rng is not None and config.value_std > 0:
+                values = np.clip(values + rng.normal(0, config.value_std, size=values.shape), 0, None)
+
+            if active_indices is not None:
+                active_values = np.zeros_like(values)
+                if active_indices.size > 0:
+                    active_values[active_indices] = values[active_indices]
+                values = active_values
+
+            dmg_vals = frac * values * cell_area_acres
+            dmg_per_crop = np.bincount(crop_masked, weights=dmg_vals, minlength=max_code + 1)
+            for code in crop_codes_list:
+                damages_runs[code].append(float(dmg_per_crop[code]))
+
+            if damage_accum is not None:
+                damage_accum[mask] += dmg_vals
+
+        points: List[Tuple[float, float, int, str, float, str, float]] = []
+        if damage_accum is not None:
+            damage_avg = damage_accum / config.total_runs
+            xmin, ymin, xmax, ymax = inter
+            cw = clip_width
+            ch = clip_height
+            x0 = xmin + cw / 2
+            y0 = ymax - ch / 2
+            rows, cols = np.nonzero(mask)
+            masked_crops = crop_arr[mask]
+            masked_damages = damage_avg[mask]
+            for row, col, crop_code, dmg in zip(rows, cols, masked_crops, masked_damages):
+                crop_code = int(crop_code)
+                landcover = CROP_DEFINITIONS.get(crop_code, ("Unknown", config.default_value))[0]
+                landcover = str(landcover)[:255]
+                event_label = str(label)[:255]
+                points.append(
+                    (
+                        x0 + col * cw,
+                        y0 - row * ch,
+                        crop_code,
+                        landcover,
+                        float(dmg),
+                        event_label,
+                        float(event.return_period),
+                    )
+                )
+
+        results: List[Dict[str, object]] = []
+        for code in crop_codes_list:
+            arr = np.array(damages_runs[code], dtype=float)
+            avg_damage = float(arr.mean())
+            std_damage = float(arr.std(ddof=0))
+            p05 = float(np.percentile(arr, 5))
+            p95 = float(np.percentile(arr, 95))
+            name, _ = CROP_DEFINITIONS.get(code, ("Unknown", config.default_value))
+            results.append(
+                {
+                    "Label": label,
+                    "RP": float(event.return_period),
+                    "Crop": int(code),
+                    "LandCover": name,
+                    "Damage": avg_damage,
+                    "StdDev": std_damage,
+                    "P05": p05,
+                    "P95": p95,
+                    "FloodedAcres": pixel_counts[code] * cell_area_acres,
+                    "FloodedPixels": pixel_counts[code],
+                    "ValuePerAcre": float(val_lookup[code]),
+                }
+            )
+
+        return results, points
+
+    def _write_outputs(
+        self,
+        config: SimulationConfig,
+        results: List[Dict[str, object]],
+        points: List[Tuple[float, float, int, str, float, str, float]],
+        messages,
+    ) -> None:
         df_events = pd.DataFrame(results)
 
-        def calc_ead_discrete(df):
+        def calc_ead_discrete(df: pd.DataFrame) -> float:
             return float((df["Damage"] / df["RP"]).sum())
 
-        # Total EAD (discrete method)
         df_total = df_events.groupby(["Label", "RP"], as_index=False)["Damage"].sum()
         ead_total = calc_ead_discrete(df_total)
 
-        # EAD per crop (discrete method)
         eads_crop = {name: calc_ead_discrete(g) for name, g in df_events.groupby("LandCover")}
 
-        # Optional trapezoidal EAD when multiple return periods are provided
-        ead_total_trap = None
-        eads_crop_trap = {}
+        ead_total_trap: Optional[float] = None
+        eads_crop_trap: Dict[str, float] = {}
         if df_total["RP"].nunique() > 1:
-            def calc_ead_trap(df):
+
+            def calc_ead_trap(df: pd.DataFrame) -> float:
                 df = df.sort_values("RP", ascending=False)
                 probs = 1 / df["RP"].to_numpy()
                 damages = df["Damage"].to_numpy()
@@ -885,37 +1044,29 @@ class AgFloodDamageEstimator(object):
             ead_total_trap = calc_ead_trap(df_total)
             eads_crop_trap = {name: calc_ead_trap(g) for name, g in df_events.groupby("LandCover")}
 
-        # Write CSV for overall EAD (discrete)
-        with open(os.path.join(out_dir, "ead.csv"), "w") as f:
-            f.write(f"EAD,{ead_total}\n")
+        with open(os.path.join(config.out_dir, "ead.csv"), "w") as f:
+            f.write(f"EAD,{ead_total}\\n")
         messages.addMessage(f"Expected Annual Damage (Discrete): {ead_total:,.0f}")
 
-        # Trapezoidal CSV and message if applicable
         if ead_total_trap is not None:
-            with open(os.path.join(out_dir, "ead_trapezoidal.csv"), "w") as f:
-                f.write(f"EAD,{ead_total_trap}\n")
+            with open(os.path.join(config.out_dir, "ead_trapezoidal.csv"), "w") as f:
+                f.write(f"EAD,{ead_total_trap}\\n")
             messages.addMessage(f"Expected Annual Damage (Trapezoidal): {ead_total_trap:,.0f}")
 
-        # Export detailed results to Excel with charts
-        excel_path = os.path.join(out_dir, "damage_results.xlsx")
+        excel_path = os.path.join(config.out_dir, "damage_results.xlsx")
         with pd.ExcelWriter(excel_path, engine="openpyxl") as writer:
-            # Raw per-event damages
             df_events.to_excel(writer, sheet_name="EventDamages", index=False)
 
-            # Pivot table for charting
             pivot = df_events.pivot_table(index="Label", columns="LandCover", values="Damage", fill_value=0)
             pivot.to_excel(writer, sheet_name="EventPivot")
 
-            # EAD per crop table (discrete)
             df_ead = pd.DataFrame([{"LandCover": k, "EAD": v} for k, v in eads_crop.items()])
             df_ead.to_excel(writer, sheet_name="EAD", index=False)
 
-            # Optional trapezoidal EAD per crop table
             if ead_total_trap is not None:
                 df_ead_trap = pd.DataFrame([{"LandCover": k, "EAD": v} for k, v in eads_crop_trap.items()])
                 df_ead_trap.to_excel(writer, sheet_name="EAD_Trapezoidal", index=False)
 
-            # Chart for event damages
             worksheet_pivot = writer.sheets["EventPivot"]
             max_row = pivot.shape[0] + 1
             max_col = pivot.shape[1] + 1
@@ -931,7 +1082,6 @@ class AgFloodDamageEstimator(object):
             chart1.set_categories(cats_ref)
             worksheet_pivot.add_chart(chart1, "H2")
 
-            # Chart for EAD per crop (discrete)
             worksheet_ead = writer.sheets["EAD"]
             data_ref2 = Reference(worksheet_ead, min_col=2, min_row=1, max_row=len(df_ead) + 1)
             cats_ref2 = Reference(worksheet_ead, min_col=1, min_row=2, max_row=len(df_ead) + 1)
@@ -944,7 +1094,6 @@ class AgFloodDamageEstimator(object):
             chart2.set_categories(cats_ref2)
             worksheet_ead.add_chart(chart2, "D2")
 
-            # Chart for EAD per crop (trapezoidal) if present
             if ead_total_trap is not None:
                 worksheet_ead_trap = writer.sheets["EAD_Trapezoidal"]
                 data_ref3 = Reference(worksheet_ead_trap, min_col=2, min_row=1, max_row=len(df_ead_trap) + 1)
@@ -958,26 +1107,21 @@ class AgFloodDamageEstimator(object):
                 chart3.set_categories(cats_ref3)
                 worksheet_ead_trap.add_chart(chart3, "D2")
 
-        if out_points:
+        if config.out_points:
+            out_points = config.out_points
             if arcpy.Exists(out_points):
                 arcpy.management.Delete(out_points)
             arcpy.management.CreateFeatureclass(
                 os.path.dirname(out_points),
                 os.path.basename(out_points),
                 "POINT",
-                spatial_reference=crop_sr,
+                spatial_reference=config.crop_sr,
             )
             arcpy.management.AddField(out_points, "Crop", "LONG")
-            # Allow event and landcover labels to store long filenames without
-            # silently truncating values which can lead to insert cursor
-            # failures when the provided string exceeds the field length.
-            # Geodatabases support up to 255 characters for text fields which
-            # is sufficient for typical raster names that include descriptive
-            # prefixes or timestamps.
             arcpy.management.AddField(out_points, "LandCover", "TEXT", field_length=255)
             arcpy.management.AddField(out_points, "Damage", "DOUBLE")
             arcpy.management.AddField(out_points, "Event", "TEXT", field_length=255)
             arcpy.management.AddField(out_points, "RP", "DOUBLE")
             with arcpy.da.InsertCursor(out_points, ["SHAPE@XY", "Crop", "LandCover", "Damage", "Event", "RP"]) as cursor:
-                for x, y, c, lc, dmg, lbl, rp_val in points:
-                    cursor.insertRow([(x, y), c, lc, dmg, lbl, rp_val])
+                for x, y, crop_code, landcover, damage, label, rp in points:
+                    cursor.insertRow([(x, y), crop_code, landcover, damage, label, rp])
