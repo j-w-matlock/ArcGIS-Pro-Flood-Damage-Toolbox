@@ -594,16 +594,24 @@ class AgFloodDamageEstimator(object):
         config = self._collect_config(params)
         results: List[Dict[str, object]] = []
         points: List[Tuple[float, float, int, str, float, str, float]] = []
+        point_sr = None
 
         for event in config.events:
-            event_results, event_points = self._simulate_event(config, event)
+            event_results, event_points, event_point_sr = self._simulate_event(config, event)
             results.extend(event_results)
             points.extend(event_points)
+            if event_point_sr is not None:
+                if point_sr is None:
+                    point_sr = event_point_sr
+                elif getattr(point_sr, "name", None) != getattr(event_point_sr, "name", None):
+                    raise ValueError(
+                        "All flood depth datasets must use the same projected coordinate system when output points are requested."
+                    )
 
         if not results:
             raise ValueError("No valid events provided")
 
-        self._write_outputs(config, results, points, messages)
+        self._write_outputs(config, results, points, point_sr, messages)
 
     def _collect_config(self, params) -> SimulationConfig:
         crop_path = params[0].valueAsText
@@ -978,7 +986,11 @@ class AgFloodDamageEstimator(object):
         self,
         config: SimulationConfig,
         event: EventSpec,
-    ) -> Tuple[List[Dict[str, object]], List[Tuple[float, float, int, str, float, str, float]]]:
+    ) -> Tuple[
+        List[Dict[str, object]],
+        List[Tuple[float, float, int, str, float, str, float]],
+        Optional[object],
+    ]:
         label = event.label or self._sanitize_label(event.path)
         label = str(label)
         dataset_label = self._sanitize_label(label)
@@ -994,6 +1006,7 @@ class AgFloodDamageEstimator(object):
         inter = None
         cell_area_acres = None
         meters_per_unit = None
+        point_sr = None
 
         try:
             if event.uniform_depth is not None:
@@ -1009,6 +1022,7 @@ class AgFloodDamageEstimator(object):
                     raise ValueError(
                         f"Polygon dataset {event.path} spatial reference does not provide a valid metersPerUnit conversion."
                     )
+                point_sr = feature_sr
 
                 crop_source_desc = arcpy.Describe(config.crop_path)
                 cell_width = getattr(crop_source_desc, "meanCellWidth", None)
@@ -1069,6 +1083,7 @@ class AgFloodDamageEstimator(object):
                     raise ValueError(
                         f"Depth raster {event.path} spatial reference does not provide a valid metersPerUnit conversion."
                     )
+                point_sr = depth_sr
 
                 with arcpy.EnvManager(snapRaster=event.path, cellSize=event.path):
                     arcpy.management.ProjectRaster(
@@ -1276,13 +1291,14 @@ class AgFloodDamageEstimator(object):
                 }
             )
 
-        return results, points
+        return results, points, point_sr
 
     def _write_outputs(
         self,
         config: SimulationConfig,
         results: List[Dict[str, object]],
         points: List[Tuple[float, float, int, str, float, str, float]],
+        point_sr: Optional[object],
         messages,
     ) -> None:
         df_events = pd.DataFrame(results)
@@ -1381,7 +1397,7 @@ class AgFloodDamageEstimator(object):
                 os.path.dirname(out_points),
                 os.path.basename(out_points),
                 "POINT",
-                spatial_reference=config.crop_sr,
+                spatial_reference=point_sr if point_sr is not None else config.crop_sr,
             )
             arcpy.management.AddField(out_points, "Crop", "LONG")
             arcpy.management.AddField(out_points, "LandCover", "TEXT", field_length=255)
