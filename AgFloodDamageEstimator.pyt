@@ -1422,9 +1422,9 @@ class AgFloodDamageEstimator(object):
                     sym.updateRenderer("UniqueValueRenderer")
                     sym.renderer.fields = ["LandCover"]
                     try:
-                        import arcpy.mp  # type: ignore
+                        from arcpy import mp  # type: ignore
 
-                        project = arcpy.mp.ArcGISProject("CURRENT")
+                        project = mp.ArcGISProject("CURRENT")
                         ramps = project.listColorRamps("Random") or project.listColorRamps()
                         if ramps:
                             sym.renderer.colorRamp = ramps[0]
