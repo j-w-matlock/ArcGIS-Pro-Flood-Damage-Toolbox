@@ -842,11 +842,35 @@ class AgFloodDamageEstimator(object):
 
     @staticmethod
     def _normalize_dataset_path(path) -> str:
+        candidates: List[str] = []
+
+        def _add_candidate(value):
+            if value not in (None, ""):
+                candidates.append(str(value))
+
         if hasattr(path, "valueAsText"):
-            return path.valueAsText
+            _add_candidate(path.valueAsText)
         if hasattr(path, "dataSource"):
-            return path.dataSource
-        return str(path)
+            _add_candidate(path.dataSource)
+
+        _add_candidate(path)
+
+        for candidate in candidates:
+            try:
+                if candidate and arcpy.Exists(candidate):
+                    return candidate
+                if candidate and not os.path.splitext(candidate)[1]:
+                    shp_candidate = candidate + ".shp"
+                    if arcpy.Exists(shp_candidate):
+                        return shp_candidate
+            except Exception:
+                # Ignore ArcPy errors and fall back to the raw string below.
+                continue
+
+        for candidate in candidates:
+            if candidate:
+                return candidate
+        return ""
 
     @staticmethod
     def _sanitize_label(path: str) -> str:
