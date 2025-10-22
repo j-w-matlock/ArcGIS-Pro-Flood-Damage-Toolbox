@@ -305,6 +305,21 @@ class AgFloodDamageEstimator(object):
             "Adding or modifying rows changes which scenarios are modeled and their frequency, influencing total expected damage."
         )
 
+        mode = arcpy.Parameter(
+            displayName="Simulation Mode",
+            name="simulation_mode",
+            datatype="GPString",
+            parameterType="Required",
+            direction="Input",
+        )
+        mode.filter.type = "ValueList"
+        mode.filter.list = ["Single Run", "Monte Carlo"]
+        mode.value = "Monte Carlo"
+        mode.description = (
+            "Choose between a single deterministic evaluation of each event or a Monte Carlo simulation that "
+            "samples from the uncertainty parameters."
+        )
+
         stddev = arcpy.Parameter(
             displayName="Damage Fraction Std. Dev. (0-1)",
             name="uncertainty",
@@ -447,6 +462,7 @@ class AgFloodDamageEstimator(object):
             curve,
             specific_curve,
             event_info,
+            mode,
             stddev,
             mc,
             seed,
@@ -470,18 +486,48 @@ class AgFloodDamageEstimator(object):
         curve_str = params[7].value
         specific_table = params[8].values if params[8].values else []
         event_table = params[9].values
-        frac_std = float(params[10].value)
-        runs = int(params[11].value)
-        rand = Random(int(params[12].value))
-        random_month = bool(params[13].value) if params[13].value is not None else False
-        random_season = bool(params[14].value) if params[14].value is not None else False
-        season_prob_table = params[15].values if params[15].values else []
-        depth_std = float(params[16].value) if params[16].value is not None else 0.0
-        value_std = float(params[17].value) if params[17].value is not None else 0.0
-        analysis_years = int(params[18].value) if params[18].value is not None else 1
-        out_points = params[19].valueAsText if params[19].value else None
+        simulation_mode = params[10].valueAsText or "Monte Carlo"
+        frac_std = float(params[11].value)
+        runs = int(params[12].value)
+        rand = Random(int(params[13].value))
+        random_month = bool(params[14].value) if params[14].value is not None else False
+        random_season = bool(params[15].value) if params[15].value is not None else False
+        season_prob_table = params[16].values if params[16].values else []
+        depth_std = float(params[17].value) if params[17].value is not None else 0.0
+        value_std = float(params[18].value) if params[18].value is not None else 0.0
+        analysis_years = int(params[19].value) if params[19].value is not None else 1
+        out_points = params[20].valueAsText if params[20].value else None
 
         os.makedirs(out_dir, exist_ok=True)
+
+        if value_acre < 0:
+            raise ValueError("Default crop value per acre must be non-negative.")
+
+        if not 0 <= frac_std <= 1:
+            raise ValueError("Damage fraction standard deviation must be between 0 and 1.")
+
+        if depth_std < 0:
+            raise ValueError("Flood depth standard deviation must be zero or positive.")
+
+        if value_std < 0:
+            raise ValueError("Crop value standard deviation must be zero or positive.")
+
+        if analysis_years < 1:
+            raise ValueError("Analysis period must be at least one year.")
+
+        simulation_mode = simulation_mode or "Monte Carlo"
+        deterministic_mode = simulation_mode == "Single Run"
+
+        if deterministic_mode:
+            runs = 1
+            frac_std = 0.0
+            depth_std = 0.0
+            value_std = 0.0
+            random_month = False
+            random_season = False
+        else:
+            if runs < 1:
+                raise ValueError("Monte Carlo simulations must be at least 1.")
 
         damage_curve_pts = parse_curve(curve_str)
         curve_depths = np.array([d for d, _ in damage_curve_pts], dtype=float)
@@ -525,7 +571,10 @@ class AgFloodDamageEstimator(object):
             season_months = None
         season_prob_dict = {}
         for s, p in season_prob_table:
-            season_prob_dict[str(s)] = float(p)
+            prob = float(p)
+            if prob < 0:
+                raise ValueError("Season probabilities must be zero or positive.")
+            season_prob_dict[str(s)] = prob
         if not season_prob_dict:
             season_prob_dict = {"Winter": 0.25, "Spring": 0.25, "Summer": 0.25, "Fall": 0.25}
         season_names = list(season_lookup.keys())
@@ -541,6 +590,16 @@ class AgFloodDamageEstimator(object):
 
         for row in event_table:
             depth_path, month, rp = row
+            if month is None:
+                raise ValueError("Flood month is required for each event.")
+            month = int(month)
+            if not 1 <= month <= 12:
+                raise ValueError(f"Flood month {month} must be between 1 and 12.")
+            if rp is None:
+                raise ValueError("Return period is required for each event.")
+            rp = float(rp)
+            if rp <= 0:
+                raise ValueError(f"Return period {rp} must be greater than zero.")
             depth_str = (
                 depth_path.valueAsText
                 if hasattr(depth_path, "valueAsText")
@@ -691,9 +750,11 @@ class AgFloodDamageEstimator(object):
                     # large event tables contain many out-of-season months.
                     continue
 
-                rng = np.random.default_rng(rand.randint(0, 2**32 - 1))
+                rng = None
+                if not deterministic_mode and (depth_std > 0 or frac_std > 0 or value_std > 0):
+                    rng = np.random.default_rng(rand.randint(0, 2**32 - 1))
                 depth_sim = depth_masked
-                if depth_std > 0:
+                if depth_std > 0 and rng is not None:
                     depth_offset = rng.normal(0, depth_std)
                     depth_sim = np.clip(depth_masked + depth_offset, 0, None)
                     depth_sim = np.clip(depth_sim, 0, None)
@@ -714,12 +775,12 @@ class AgFloodDamageEstimator(object):
                         left=f_arr[0],
                         right=f_arr[-1],
                     )
-                if frac_std > 0:
+                if frac_std > 0 and rng is not None:
                     frac = frac + rng.normal(0, frac_std, size=frac.shape)
                     frac = np.clip(frac, 0, 1)
 
                 values = val_lookup[crop_masked]
-                if value_std > 0:
+                if value_std > 0 and rng is not None:
                     values = np.clip(values + rng.normal(0, value_std, size=values.shape), 0, None)
                 values[~active_mask] = 0
 
