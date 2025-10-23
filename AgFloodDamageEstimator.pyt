@@ -340,7 +340,7 @@ class AgFloodDamageEstimator(object):
         specific_curve.columns = [
             ["GPLong", "Crop Code"],
             ["GPString", "Depth-Damage Curve"],
-            ["GPString", "Grow Months"],
+            ["GPString", "Growing Months"],
         ]
         specific_curve.description = (
             "Optional crop-specific depth-damage curves. "
@@ -514,8 +514,8 @@ class AgFloodDamageEstimator(object):
         )
         analysis.value = 1
         analysis.description = (
-            "Number of years to simulate for each event. "
-            "Extending the period scales damages across more years of exposure."
+            "Number of simulated years used during Monte Carlo runs. "
+            "Increasing this value repeats the run count across more years and averages results, stabilizing annual damages without scaling them."
         )
 
         pts = arcpy.Parameter(
@@ -1140,7 +1140,7 @@ class AgFloodDamageEstimator(object):
         crop_masked = crop_arr[mask].astype(int)
         depth_masked = depth_arr[mask]
         if crop_masked.size == 0:
-            return [], []
+            return [], [], None
 
         crop_codes = np.unique(crop_masked)
         max_code = int(crop_codes.max())
