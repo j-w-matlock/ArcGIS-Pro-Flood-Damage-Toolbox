@@ -1412,17 +1412,40 @@ class AgFloodDamageEstimator(object):
             arcpy.management.AddField(out_points, "Event", "TEXT", field_length=255)
             arcpy.management.AddField(out_points, "RP", "DOUBLE")
             skipped_points = 0
+            error_messages: List[str] = []
             with arcpy.da.InsertCursor(out_points, ["SHAPE@XY", "Crop", "LandCover", "Damage", "Event", "RP"]) as cursor:
                 for x, y, crop_code, landcover, damage, label, rp in points:
                     if not all(math.isfinite(val) for val in (x, y, damage, rp)):
                         skipped_points += 1
                         continue
-                    cursor.insertRow([(x, y), crop_code, landcover, damage, label, rp])
+
+                    row = (
+                        (float(x), float(y)),
+                        int(crop_code) if crop_code is not None else None,
+                        str(landcover) if landcover is not None else None,
+                        float(damage),
+                        str(label) if label is not None else None,
+                        float(rp),
+                    )
+
+                    try:
+                        cursor.insertRow(row)
+                    except SystemError as exc:
+                        skipped_points += 1
+                        if len(error_messages) < 3:
+                            error_messages.append(str(exc) or "InsertCursor returned NULL")
+                    except Exception as exc:
+                        skipped_points += 1
+                        if len(error_messages) < 3:
+                            error_messages.append(str(exc))
 
             if skipped_points:
-                messages.addWarningMessage(
-                    f"Skipped {skipped_points} damage points with invalid geometry or attributes"
+                warning = "Skipped {0} damage points with invalid geometry or attributes".format(
+                    skipped_points
                 )
+                if error_messages:
+                    warning += ": " + "; ".join(error_messages)
+                messages.addWarningMessage(warning)
 
             layer = None
             try:
