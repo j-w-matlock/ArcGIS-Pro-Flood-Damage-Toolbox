@@ -1,4 +1,5 @@
 import arcpy
+import math
 import os
 import shutil
 import tempfile
@@ -1255,15 +1256,21 @@ class AgFloodDamageEstimator(object):
                 landcover = CROP_DEFINITIONS.get(crop_code, ("Unknown", config.default_value))[0]
                 landcover = str(landcover)[:255]
                 event_label = str(label)[:255]
+                x = x0 + col * cw
+                y = y0 - row * ch
+                damage_val = float(dmg)
+                rp_val = float(event.return_period)
+                if not all(math.isfinite(val) for val in (x, y, damage_val, rp_val)):
+                    continue
                 points.append(
                     (
-                        x0 + col * cw,
-                        y0 - row * ch,
+                        x,
+                        y,
                         crop_code,
                         landcover,
-                        float(dmg),
+                        damage_val,
                         event_label,
-                        float(event.return_period),
+                        rp_val,
                     )
                 )
 
@@ -1404,9 +1411,18 @@ class AgFloodDamageEstimator(object):
             arcpy.management.AddField(out_points, "Damage", "DOUBLE")
             arcpy.management.AddField(out_points, "Event", "TEXT", field_length=255)
             arcpy.management.AddField(out_points, "RP", "DOUBLE")
+            skipped_points = 0
             with arcpy.da.InsertCursor(out_points, ["SHAPE@XY", "Crop", "LandCover", "Damage", "Event", "RP"]) as cursor:
                 for x, y, crop_code, landcover, damage, label, rp in points:
+                    if not all(math.isfinite(val) for val in (x, y, damage, rp)):
+                        skipped_points += 1
+                        continue
                     cursor.insertRow([(x, y), crop_code, landcover, damage, label, rp])
+
+            if skipped_points:
+                messages.addWarningMessage(
+                    f"Skipped {skipped_points} damage points with invalid geometry or attributes"
+                )
 
             layer = None
             try:
