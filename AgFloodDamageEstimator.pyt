@@ -12,6 +12,28 @@ import pandas as pd
 from openpyxl.chart import BarChart, Reference
 
 
+def _sanitize_text(value: Optional[object], max_length: int, allow_null: bool = False) -> Optional[str]:
+    """Return a version of *value* that can be safely written to text fields."""
+
+    if value is None:
+        return None if allow_null else ""
+
+    text = str(value)
+
+    # Guard against embedded NUL/line break characters that cause ArcPy insertRow to fail.
+    text = text.replace("\x00", "").replace("\r", " ").replace("\n", " ")
+
+    text = text.strip()
+
+    if not text:
+        return None if allow_null else ""
+
+    if len(text) > max_length:
+        text = text[:max_length]
+
+    return text
+
+
 # Crop code definitions with default value per acre
 CROP_DEFINITIONS = {
     1: ("Corn", 779.96),
@@ -1254,8 +1276,8 @@ class AgFloodDamageEstimator(object):
             for row, col, crop_code, dmg in zip(rows, cols, masked_crops, masked_damages):
                 crop_code = int(crop_code)
                 landcover = CROP_DEFINITIONS.get(crop_code, ("Unknown", config.default_value))[0]
-                landcover = str(landcover)[:255]
-                event_label = str(label)[:255]
+                landcover = _sanitize_text(landcover, 255, allow_null=True)
+                event_label = _sanitize_text(label, 255, allow_null=True)
                 x = x0 + col * cw
                 y = y0 - row * ch
                 damage_val = float(dmg)
@@ -1422,9 +1444,9 @@ class AgFloodDamageEstimator(object):
                     row = (
                         (float(x), float(y)),
                         int(crop_code) if crop_code is not None else None,
-                        str(landcover) if landcover is not None else None,
+                        _sanitize_text(landcover, 255, allow_null=True),
                         float(damage),
-                        str(label) if label is not None else None,
+                        _sanitize_text(label, 255, allow_null=True),
                         float(rp),
                     )
 
@@ -1433,11 +1455,19 @@ class AgFloodDamageEstimator(object):
                     except SystemError as exc:
                         skipped_points += 1
                         if len(error_messages) < 3:
-                            error_messages.append(str(exc) or "InsertCursor returned NULL")
+                            error_messages.append(
+                                (
+                                    str(exc)
+                                    or "InsertCursor returned NULL"
+                                )
+                                + f" for crop {crop_code} event '{label}' at ({x}, {y})"
+                            )
                     except Exception as exc:
                         skipped_points += 1
                         if len(error_messages) < 3:
-                            error_messages.append(str(exc))
+                            error_messages.append(
+                                f"{exc} for crop {crop_code} event '{label}' at ({x}, {y})"
+                            )
 
             if skipped_points:
                 warning = "Skipped {0} damage points with invalid geometry or attributes".format(
