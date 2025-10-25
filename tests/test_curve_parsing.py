@@ -16,6 +16,7 @@ def _ensure_numpy_stub():
 
     numpy_stub = types.ModuleType("numpy")
     numpy_stub.ndarray = object
+    numpy_stub.bool_ = bool
     numpy_stub.array = _not_impl
     numpy_stub.bincount = _not_impl
     numpy_stub.clip = _not_impl
@@ -29,6 +30,7 @@ def _ensure_numpy_stub():
     numpy_stub.unique = _not_impl
     numpy_stub.where = _not_impl
     numpy_stub.zeros_like = _not_impl
+    numpy_stub.isscalar = lambda value: isinstance(value, (int, float))
     numpy_stub.random = types.SimpleNamespace(default_rng=_not_impl)
     sys.modules["numpy"] = numpy_stub
 

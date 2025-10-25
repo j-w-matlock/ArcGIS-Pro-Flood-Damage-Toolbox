@@ -1007,25 +1007,54 @@ class AgFloodDamageEstimator(object):
         return arcpy.CreateUniqueName(name, workspace)
 
     @staticmethod
-    def _acre_block_size(cell_area_acres: float) -> Optional[int]:
-        """Return block size that aggregates cells to ~1 acre, if applicable."""
+    def _acre_block_size(cell_area_acres: float) -> Optional[Tuple[int, int]]:
+        """Return block dimensions that aggregate cells to roughly one acre."""
 
         if not math.isfinite(cell_area_acres) or cell_area_acres <= 0:
             return None
 
-        cells_per_acre = round(1.0 / cell_area_acres)
-        if cells_per_acre <= 1:
+        # Number of raster cells that make up an acre.
+        target_cells = 1.0 / cell_area_acres
+        if target_cells <= 1.0:
             return None
 
-        # Require the rounded cell count to recreate an acre within 5%.
-        if abs(cells_per_acre * cell_area_acres - 1.0) > 0.05:
-            return None
+        # Search for a small rectangular block that approximates one acre. The
+        # previous implementation required a perfect square count of cells,
+        # which excluded common cell sizes (e.g. 30 m NASS cropland rasters
+        # yield ~4.5 cells per acre).  By exploring nearby rectangular
+        # configurations we can find a good approximation for these rasters.
+        best_dims: Optional[Tuple[int, int]] = None
+        best_metric: Optional[Tuple[float, float, int]] = None
 
-        block_size = round(math.sqrt(cells_per_acre))
-        if block_size < 2 or block_size * block_size != cells_per_acre:
-            return None
+        max_cells = max(2, int(math.ceil(target_cells * 1.5)))
+        for rows in range(1, max_cells + 1):
+            base = target_cells / rows
+            for cols_candidate in {
+                max(1, int(round(base))),
+                max(1, int(math.floor(base))),
+                max(1, int(math.ceil(base))),
+            }:
+                cols = cols_candidate
+                cell_count = rows * cols
+                if cell_count < 2 or cell_count > max_cells:
+                    continue
 
-        return block_size
+                acres = cell_count * cell_area_acres
+                error = abs(acres - 1.0)
+
+                # Skip clearly poor approximations (>30% error).
+                if error > 0.3:
+                    continue
+
+                # Prefer shapes that are close to square and use fewer cells
+                # when multiple candidates have similar acreage error.
+                shape_penalty = abs(rows - cols)
+                metric = (acres < 1.0, error, float(shape_penalty), cell_count)
+                if best_metric is None or metric < best_metric:
+                    best_metric = metric
+                    best_dims = (rows, cols)
+
+        return best_dims
 
     def _simulate_event(
         self,
@@ -1295,14 +1324,15 @@ class AgFloodDamageEstimator(object):
             masked_damages = damage_avg[mask]
             rp_val = float(event.return_period)
             event_label = _sanitize_text(label, 255, allow_null=True)
-            block_size = self._acre_block_size(cell_area_acres)
+            block_dims = self._acre_block_size(cell_area_acres)
 
-            if block_size is not None:
+            if block_dims is not None:
+                block_rows, block_cols = block_dims
                 block_data: Dict[Tuple[int, int], Dict[str, object]] = {}
                 for row, col, crop_code, dmg in zip(rows, cols, masked_crops, masked_damages):
                     crop_int = int(crop_code)
-                    block_row = int(row // block_size)
-                    block_col = int(col // block_size)
+                    block_row = int(row // block_rows)
+                    block_col = int(col // block_cols)
                     key = (block_row, block_col)
                     data = block_data.setdefault(
                         key,
@@ -1321,8 +1351,8 @@ class AgFloodDamageEstimator(object):
                     crop_code = max(counts.items(), key=lambda kv: (kv[1], -kv[0]))[0]
                     landcover = CROP_DEFINITIONS.get(crop_code, ("Unknown", config.default_value))[0]
                     landcover = _sanitize_text(landcover, 255, allow_null=True)
-                    x = xmin + (block_col * block_size + block_size / 2.0) * cw
-                    y = ymax - (block_row * block_size + block_size / 2.0) * ch
+                    x = xmin + (block_col * block_cols + block_cols / 2.0) * cw
+                    y = ymax - (block_row * block_rows + block_rows / 2.0) * ch
                     damage_val = float(data["damage"])
                     if not all(math.isfinite(val) for val in (x, y, damage_val, rp_val)):
                         continue
