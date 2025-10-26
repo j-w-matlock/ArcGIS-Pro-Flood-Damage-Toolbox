@@ -1008,7 +1008,7 @@ class AgFloodDamageEstimator(object):
 
     @staticmethod
     def _acre_block_size(cell_area_acres: float) -> Optional[Tuple[int, int]]:
-        """Return block dimensions that aggregate cells to roughly one acre."""
+        """Return square block dimensions that aggregate cells near one acre."""
 
         if not math.isfinite(cell_area_acres) or cell_area_acres <= 0:
             return None
@@ -1018,41 +1018,29 @@ class AgFloodDamageEstimator(object):
         if target_cells <= 1.0:
             return None
 
-        # Search for a small rectangular block that approximates one acre. The
-        # previous implementation required a perfect square count of cells,
-        # which excluded common cell sizes (e.g. 30 m NASS cropland rasters
-        # yield ~4.5 cells per acre).  By exploring nearby rectangular
-        # configurations we can find a good approximation for these rasters.
+        # Search for a small square block that approximates one acre.  For a
+        # regular raster grid this provides evenly spaced centroid points and
+        # uniform coverage in both the row and column directions.
         best_dims: Optional[Tuple[int, int]] = None
-        best_metric: Optional[Tuple[float, float, int]] = None
+        best_metric: Optional[Tuple[float, float]] = None
 
-        max_cells = max(2, int(math.ceil(target_cells * 1.5)))
-        for rows in range(1, max_cells + 1):
-            base = target_cells / rows
-            for cols_candidate in {
-                max(1, int(round(base))),
-                max(1, int(math.floor(base))),
-                max(1, int(math.ceil(base))),
-            }:
-                cols = cols_candidate
-                cell_count = rows * cols
-                if cell_count < 2 or cell_count > max_cells:
-                    continue
+        max_side = max(2, int(math.ceil(math.sqrt(target_cells * 1.5))))
+        for side in range(1, max_side + 1):
+            cell_count = side * side
+            if cell_count < 2:
+                continue
 
-                acres = cell_count * cell_area_acres
-                error = abs(acres - 1.0)
+            acres = cell_count * cell_area_acres
+            error = abs(acres - 1.0)
 
-                # Skip clearly poor approximations (>30% error).
-                if error > 0.3:
-                    continue
+            # Skip clearly poor approximations (>30% error).
+            if error > 0.3:
+                continue
 
-                # Prefer shapes that are close to square and use fewer cells
-                # when multiple candidates have similar acreage error.
-                shape_penalty = abs(rows - cols)
-                metric = (acres < 1.0, error, float(shape_penalty), cell_count)
-                if best_metric is None or metric < best_metric:
-                    best_metric = metric
-                    best_dims = (rows, cols)
+            metric = (acres < 1.0, error)
+            if best_metric is None or metric < best_metric:
+                best_metric = metric
+                best_dims = (side, side)
 
         return best_dims
 
