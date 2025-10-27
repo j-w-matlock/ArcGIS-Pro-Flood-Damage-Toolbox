@@ -1006,44 +1006,6 @@ class AgFloodDamageEstimator(object):
         name = base_name if use_gdb else f"{base_name}.tif"
         return arcpy.CreateUniqueName(name, workspace)
 
-    @staticmethod
-    def _acre_block_size(cell_area_acres: float) -> Optional[Tuple[int, int]]:
-        """Return square block dimensions that aggregate cells near one acre."""
-
-        if not math.isfinite(cell_area_acres) or cell_area_acres <= 0:
-            return None
-
-        # Number of raster cells that make up an acre.
-        target_cells = 1.0 / cell_area_acres
-        if target_cells <= 1.0:
-            return None
-
-        # Search for a small square block that approximates one acre.  For a
-        # regular raster grid this provides evenly spaced centroid points and
-        # uniform coverage in both the row and column directions.
-        best_dims: Optional[Tuple[int, int]] = None
-        best_metric: Optional[Tuple[float, float]] = None
-
-        max_side = max(2, int(math.ceil(math.sqrt(target_cells * 1.5))))
-        for side in range(1, max_side + 1):
-            cell_count = side * side
-            if cell_count < 2:
-                continue
-
-            acres = cell_count * cell_area_acres
-            error = abs(acres - 1.0)
-
-            # Skip clearly poor approximations (>30% error).
-            if error > 0.3:
-                continue
-
-            metric = (acres < 1.0, error)
-            if best_metric is None or metric < best_metric:
-                best_metric = metric
-                best_dims = (side, side)
-
-        return best_dims
-
     def _simulate_event(
         self,
         config: SimulationConfig,
@@ -1312,72 +1274,28 @@ class AgFloodDamageEstimator(object):
             masked_damages = damage_avg[mask]
             rp_val = float(event.return_period)
             event_label = _sanitize_text(label, 255, allow_null=True)
-            block_dims = self._acre_block_size(cell_area_acres)
-
-            if block_dims is not None:
-                block_rows, block_cols = block_dims
-                block_data: Dict[Tuple[int, int], Dict[str, object]] = {}
-                for row, col, crop_code, dmg in zip(rows, cols, masked_crops, masked_damages):
-                    crop_int = int(crop_code)
-                    block_row = int(row // block_rows)
-                    block_col = int(col // block_cols)
-                    key = (block_row, block_col)
-                    data = block_data.setdefault(
-                        key,
-                        {
-                            "damage": 0.0,
-                            "counts": defaultdict(int),
-                        },
+            x0 = xmin + cw / 2
+            y0 = ymax - ch / 2
+            for row, col, crop_code, dmg in zip(rows, cols, masked_crops, masked_damages):
+                crop_int = int(crop_code)
+                landcover = CROP_DEFINITIONS.get(crop_int, ("Unknown", config.default_value))[0]
+                landcover = _sanitize_text(landcover, 255, allow_null=True)
+                x = x0 + col * cw
+                y = y0 - row * ch
+                damage_val = float(dmg)
+                if not all(math.isfinite(val) for val in (x, y, damage_val, rp_val)):
+                    continue
+                points.append(
+                    (
+                        x,
+                        y,
+                        crop_int,
+                        landcover,
+                        damage_val,
+                        event_label,
+                        rp_val,
                     )
-                    data["damage"] += float(dmg)
-                    data["counts"][crop_int] += 1
-
-                for block_key in sorted(block_data):
-                    block_row, block_col = block_key
-                    data = block_data[block_key]
-                    counts = data["counts"]
-                    crop_code = max(counts.items(), key=lambda kv: (kv[1], -kv[0]))[0]
-                    landcover = CROP_DEFINITIONS.get(crop_code, ("Unknown", config.default_value))[0]
-                    landcover = _sanitize_text(landcover, 255, allow_null=True)
-                    x = xmin + (block_col * block_cols + block_cols / 2.0) * cw
-                    y = ymax - (block_row * block_rows + block_rows / 2.0) * ch
-                    damage_val = float(data["damage"])
-                    if not all(math.isfinite(val) for val in (x, y, damage_val, rp_val)):
-                        continue
-                    points.append(
-                        (
-                            x,
-                            y,
-                            int(crop_code),
-                            landcover,
-                            damage_val,
-                            event_label,
-                            rp_val,
-                        )
-                    )
-            else:
-                x0 = xmin + cw / 2
-                y0 = ymax - ch / 2
-                for row, col, crop_code, dmg in zip(rows, cols, masked_crops, masked_damages):
-                    crop_int = int(crop_code)
-                    landcover = CROP_DEFINITIONS.get(crop_int, ("Unknown", config.default_value))[0]
-                    landcover = _sanitize_text(landcover, 255, allow_null=True)
-                    x = x0 + col * cw
-                    y = y0 - row * ch
-                    damage_val = float(dmg)
-                    if not all(math.isfinite(val) for val in (x, y, damage_val, rp_val)):
-                        continue
-                    points.append(
-                        (
-                            x,
-                            y,
-                            crop_int,
-                            landcover,
-                            damage_val,
-                            event_label,
-                            rp_val,
-                        )
-                    )
+                )
 
         results: List[Dict[str, object]] = []
         for code in crop_codes_list:
