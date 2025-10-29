@@ -173,6 +173,32 @@ CROP_DEFINITIONS = {
     254: ("Dbl Crop Barley/Soybeans", 509.145),
 }
 
+
+def _crop_filter_choices() -> List[str]:
+    return [f"{code} - {name}" for code, (name, _) in sorted(CROP_DEFINITIONS.items())]
+
+
+def _parse_crop_filter(value: Optional[str]) -> Optional[FrozenSet[int]]:
+    if not value:
+        return None
+
+    selections = []
+    for part in str(value).split(";"):
+        token = part.strip()
+        if not token:
+            continue
+        if " - " in token:
+            token = token.split(" - ", 1)[0]
+        try:
+            selections.append(int(token))
+        except ValueError:
+            continue
+
+    if not selections:
+        return frozenset()
+
+    return frozenset(selections)
+
 def parse_months(month_str):
     """Return a set of valid month numbers (1-12) from a comma string."""
     if not month_str:
@@ -259,6 +285,7 @@ class SimulationConfig:
     season_weights: Sequence[float]
     season_months: Optional[FrozenSet[int]]
     out_points: Optional[str]
+    point_crop_filter: Optional[FrozenSet[int]]
 
     @property
     def total_runs(self) -> int:
@@ -554,6 +581,21 @@ class AgFloodDamageEstimator(object):
             "Creating this output enables spatial analysis but increases processing time; leaving it blank skips this step."
         )
 
+        crop_filter = arcpy.Parameter(
+            displayName="Damage Point Land Cover Filter",
+            name="point_land_covers",
+            datatype="GPString",
+            parameterType="Optional",
+            direction="Input",
+            multiValue=True,
+        )
+        crop_filter.filter.type = "ValueList"
+        crop_filter.filter.list = _crop_filter_choices()
+        crop_filter.description = (
+            "Optional list of land cover classes to include in the damage point feature class. "
+            "Leave empty to export all classes; selecting entries restricts the output to those land covers."
+        )
+
         return [
             crop,
             out,
@@ -577,10 +619,11 @@ class AgFloodDamageEstimator(object):
             value_sd,
             analysis,
             pts,
+            crop_filter,
         ]
 
     def updateParameters(self, parameters):
-        if len(parameters) < 22:
+        if len(parameters) < 23:
             return
 
         mode_param = parameters[11]
@@ -613,6 +656,14 @@ class AgFloodDamageEstimator(object):
                 parameters[15].value = False
             if 16 < len(parameters) and parameters[16].value:
                 parameters[16].value = False
+
+        if 21 < len(parameters) and 22 < len(parameters):
+            out_points_param = parameters[21]
+            filter_param = parameters[22]
+            enabled = bool(out_points_param.value)
+            filter_param.enabled = enabled
+            if not enabled:
+                filter_param.value = None
 
     def execute(self, params, messages):
         config = self._collect_config(params)
@@ -660,6 +711,12 @@ class AgFloodDamageEstimator(object):
         value_std = float(params[19].value) if params[19].value is not None else 0.0
         analysis_years = int(params[20].value) if params[20].value is not None else 1
         out_points = params[21].valueAsText if params[21].value else None
+        point_filter_text = params[22].valueAsText if len(params) > 22 else None
+
+        if out_points:
+            point_crop_filter = _parse_crop_filter(point_filter_text)
+        else:
+            point_crop_filter = None
 
         os.makedirs(out_dir, exist_ok=True)
 
@@ -740,6 +797,7 @@ class AgFloodDamageEstimator(object):
             season_weights=season_weights,
             season_months=season_months,
             out_points=out_points,
+            point_crop_filter=point_crop_filter,
         )
 
     def _parse_specific_curves(self, specific_table: Iterable[Sequence]) -> Dict[int, DamageCurve]:
@@ -1278,6 +1336,8 @@ class AgFloodDamageEstimator(object):
             y0 = ymax - ch / 2
             for row, col, crop_code, dmg in zip(rows, cols, masked_crops, masked_damages):
                 crop_int = int(crop_code)
+                if config.point_crop_filter is not None and crop_int not in config.point_crop_filter:
+                    continue
                 landcover = CROP_DEFINITIONS.get(crop_int, ("Unknown", config.default_value))[0]
                 landcover = _sanitize_text(landcover, 255, allow_null=True)
                 x = x0 + col * cw
