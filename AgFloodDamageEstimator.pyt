@@ -182,7 +182,11 @@ def _parse_crop_filter(value: Optional[str]) -> Optional[FrozenSet[int]]:
     if not value:
         return None
 
-    selections = []
+    selections: List[int] = []
+    name_lookup: Dict[str, List[int]] = defaultdict(list)
+    for code, (name, _) in CROP_DEFINITIONS.items():
+        name_lookup[name.strip().lower()].append(int(code))
+
     for part in str(value).split(";"):
         token = part.strip()
         if not token:
@@ -191,11 +195,25 @@ def _parse_crop_filter(value: Optional[str]) -> Optional[FrozenSet[int]]:
             token = token.split(" - ", 1)[0]
         try:
             selections.append(int(token))
+            continue
         except ValueError:
+            pass
+
+        normalized = token.lower()
+        if normalized in name_lookup:
+            selections.extend(name_lookup[normalized])
             continue
 
+        digits = "".join(ch for ch in token if ch.isdigit())
+        if digits:
+            try:
+                selections.append(int(digits))
+                continue
+            except ValueError:
+                pass
+
     if not selections:
-        return frozenset()
+        return None
 
     return frozenset(selections)
 
