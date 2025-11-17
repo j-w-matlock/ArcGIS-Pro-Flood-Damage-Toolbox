@@ -16,6 +16,10 @@ from openpyxl.chart import BarChart, Reference
 # NAD 1983 BLM Zone 10N (US Feet) spatial reference for damage point outputs (WKID 4430)
 POINT_OUTPUT_SPATIAL_REFERENCE = arcpy.SpatialReference(4430)
 
+POINT_OUTPUT_SR_OPTION_DEFAULT = "Default (NAD 1983 BLM Zone 10N)"
+POINT_OUTPUT_SR_OPTION_CROP = "Match Crop Raster"
+POINT_OUTPUT_SR_OPTION_FLOOD = "Match Flood Inputs"
+
 
 def _sanitize_text(value: Optional[object], max_length: int, allow_null: bool = False) -> Optional[str]:
     """Return a version of *value* that can be safely written to text fields."""
@@ -308,6 +312,7 @@ class SimulationConfig:
     season_months: Optional[FrozenSet[int]]
     out_points: Optional[str]
     point_crop_filter: Optional[FrozenSet[int]]
+    point_output_sr_source: str
 
     @property
     def total_runs(self) -> int:
@@ -603,6 +608,26 @@ class AgFloodDamageEstimator(object):
             "Creating this output enables spatial analysis but increases processing time; leaving it blank skips this step."
         )
 
+        point_sr_param = arcpy.Parameter(
+            displayName="Damage Point Spatial Reference",
+            name="point_spatial_reference_source",
+            datatype="GPString",
+            parameterType="Optional",
+            direction="Input",
+        )
+        point_sr_param.filter.type = "ValueList"
+        point_sr_param.filter.list = [
+            POINT_OUTPUT_SR_OPTION_DEFAULT,
+            POINT_OUTPUT_SR_OPTION_CROP,
+            POINT_OUTPUT_SR_OPTION_FLOOD,
+        ]
+        point_sr_param.value = POINT_OUTPUT_SR_OPTION_DEFAULT
+        point_sr_param.description = (
+            "Controls which spatial reference is written to the optional damage point feature class. "
+            "Match the crop raster to stay in the native units, match flood inputs to follow the depth datasets, "
+            "or keep the default NAD 1983 BLM Zone 10N reference."
+        )
+
         crop_filter = arcpy.Parameter(
             displayName="Damage Point Land Cover Filter",
             name="point_land_covers",
@@ -641,6 +666,7 @@ class AgFloodDamageEstimator(object):
             value_sd,
             analysis,
             pts,
+            point_sr_param,
             crop_filter,
         ]
 
@@ -679,13 +705,17 @@ class AgFloodDamageEstimator(object):
             if 16 < len(parameters) and parameters[16].value:
                 parameters[16].value = False
 
-        if 21 < len(parameters) and 22 < len(parameters):
+        if 21 < len(parameters):
             out_points_param = parameters[21]
-            filter_param = parameters[22]
             enabled = bool(out_points_param.value)
-            filter_param.enabled = enabled
-            if not enabled:
-                filter_param.value = None
+            if 22 < len(parameters):
+                sr_param = parameters[22]
+                sr_param.enabled = enabled
+            if 23 < len(parameters):
+                filter_param = parameters[23]
+                filter_param.enabled = enabled
+                if not enabled:
+                    filter_param.value = None
 
     def execute(self, params, messages):
         config = self._collect_config(params)
@@ -733,7 +763,11 @@ class AgFloodDamageEstimator(object):
         value_std = float(params[19].value) if params[19].value is not None else 0.0
         analysis_years = int(params[20].value) if params[20].value is not None else 1
         out_points = params[21].valueAsText if params[21].value else None
-        point_filter_text = params[22].valueAsText if len(params) > 22 else None
+        point_sr_source = params[22].valueAsText if len(params) > 22 else None
+        point_filter_text = params[23].valueAsText if len(params) > 23 else None
+
+        if not point_sr_source:
+            point_sr_source = POINT_OUTPUT_SR_OPTION_DEFAULT
 
         if out_points:
             point_crop_filter = _parse_crop_filter(point_filter_text)
@@ -820,6 +854,7 @@ class AgFloodDamageEstimator(object):
             season_months=season_months,
             out_points=out_points,
             point_crop_filter=point_crop_filter,
+            point_output_sr_source=point_sr_source,
         )
 
     def _parse_specific_curves(self, specific_table: Iterable[Sequence]) -> Dict[int, DamageCurve]:
@@ -1505,7 +1540,7 @@ class AgFloodDamageEstimator(object):
             out_points = config.out_points
             if arcpy.Exists(out_points):
                 arcpy.management.Delete(out_points)
-            target_sr = POINT_OUTPUT_SPATIAL_REFERENCE
+            target_sr = self._resolve_point_output_sr(config, point_sr)
             arcpy.management.CreateFeatureclass(
                 os.path.dirname(out_points),
                 os.path.basename(out_points),
@@ -1643,3 +1678,16 @@ class AgFloodDamageEstimator(object):
                     arcpy.SetParameterAsText(21, out_points)
             except Exception:
                 pass
+
+    def _resolve_point_output_sr(self, config: SimulationConfig, source_sr: Optional[object]):
+        option = config.point_output_sr_source or POINT_OUTPUT_SR_OPTION_DEFAULT
+        if option == POINT_OUTPUT_SR_OPTION_CROP:
+            return config.crop_sr
+        if option == POINT_OUTPUT_SR_OPTION_FLOOD:
+            if source_sr is None:
+                raise ValueError(
+                    "Damage point spatial reference is set to match flood inputs, "
+                    "but the flood datasets did not report a spatial reference."
+                )
+            return source_sr
+        return POINT_OUTPUT_SPATIAL_REFERENCE
