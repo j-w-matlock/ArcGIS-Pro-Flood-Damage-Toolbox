@@ -13,6 +13,10 @@ import pandas as pd
 from openpyxl.chart import BarChart, Reference
 
 
+# NAD 1983 BLM Zone 10N (US Feet) spatial reference for damage point outputs (WKID 4430)
+POINT_OUTPUT_SPATIAL_REFERENCE = arcpy.SpatialReference(4430)
+
+
 def _sanitize_text(value: Optional[object], max_length: int, allow_null: bool = False) -> Optional[str]:
     """Return a version of *value* that can be safely written to text fields."""
 
@@ -1501,32 +1505,73 @@ class AgFloodDamageEstimator(object):
             out_points = config.out_points
             if arcpy.Exists(out_points):
                 arcpy.management.Delete(out_points)
+            target_sr = POINT_OUTPUT_SPATIAL_REFERENCE
             arcpy.management.CreateFeatureclass(
                 os.path.dirname(out_points),
                 os.path.basename(out_points),
                 "POINT",
-                spatial_reference=point_sr if point_sr is not None else config.crop_sr,
+                spatial_reference=target_sr,
             )
             arcpy.management.AddField(out_points, "Crop", "LONG")
             arcpy.management.AddField(out_points, "LandCover", "TEXT", field_length=255)
             arcpy.management.AddField(out_points, "Damage", "DOUBLE")
             arcpy.management.AddField(out_points, "Event", "TEXT", field_length=255)
             arcpy.management.AddField(out_points, "RP", "DOUBLE")
+            arcpy.management.AddField(out_points, "Name", "TEXT", field_length=255)
+            arcpy.management.AddField(out_points, "FoundHT", "DOUBLE")
             skipped_points = 0
             error_messages: List[str] = []
-            with arcpy.da.InsertCursor(out_points, ["SHAPE@XY", "Crop", "LandCover", "Damage", "Event", "RP"]) as cursor:
+            name_counts: Dict[str, int] = {}
+            source_sr = point_sr if point_sr is not None else config.crop_sr
+            cursor_fields = [
+                "SHAPE@XY",
+                "Crop",
+                "LandCover",
+                "Damage",
+                "Event",
+                "RP",
+                "Name",
+                "FoundHT",
+            ]
+            with arcpy.da.InsertCursor(out_points, cursor_fields) as cursor:
                 for x, y, crop_code, landcover, damage, label, rp in points:
                     if not all(math.isfinite(val) for val in (x, y, damage, rp)):
                         skipped_points += 1
                         continue
 
+                    try:
+                        xy = (float(x), float(y))
+                        if source_sr and getattr(source_sr, "factoryCode", None) != getattr(target_sr, "factoryCode", None):
+                            point_geom = arcpy.PointGeometry(arcpy.Point(xy[0], xy[1]), source_sr)
+                            point_geom = point_geom.projectAs(target_sr)
+                            xy = (point_geom.firstPoint.X, point_geom.firstPoint.Y)
+                    except Exception as exc:
+                        skipped_points += 1
+                        if len(error_messages) < 3:
+                            error_messages.append(
+                                f"{exc} for crop {crop_code} event '{label}' at ({x}, {y}) during projection"
+                            )
+                        continue
+
+                    landcover_clean = _sanitize_text(landcover, 255, allow_null=True)
+                    label_clean = _sanitize_text(label, 255, allow_null=True)
+                    name_key = landcover_clean or "Unknown"
+                    count = name_counts.get(name_key, 0) + 1
+                    name_counts[name_key] = count
+                    name_prefix = "".join(ch for ch in name_key if ch.isalnum())
+                    if not name_prefix:
+                        name_prefix = "Crop"
+                    name_value = _sanitize_text(f"{name_prefix}{count}", 255)
+
                     row = (
-                        (float(x), float(y)),
+                        xy,
                         int(crop_code) if crop_code is not None else None,
-                        _sanitize_text(landcover, 255, allow_null=True),
+                        landcover_clean,
                         float(damage),
-                        _sanitize_text(label, 255, allow_null=True),
+                        label_clean,
                         float(rp),
+                        name_value,
+                        0.0,
                     )
 
                     try:

@@ -88,7 +88,15 @@ def _load_estimator_module():
 
     # Provide a lightweight stub for arcpy so the estimator can be imported
     # in test environments where ArcPy is unavailable.
-    sys.modules.setdefault("arcpy", types.ModuleType("arcpy"))
+    arcpy_stub = sys.modules.setdefault("arcpy", types.ModuleType("arcpy"))
+
+    if not hasattr(arcpy_stub, "SpatialReference"):
+        class _SpatialReference:
+            def __init__(self, wkid=None):
+                self.factoryCode = wkid
+                self.name = f"WKID {wkid}" if wkid is not None else None
+
+        arcpy_stub.SpatialReference = _SpatialReference
 
     module_path = Path(__file__).resolve().parents[1] / "AgFloodDamageEstimator.pyt"
     loader = importlib.machinery.SourceFileLoader(module_name, str(module_path))
